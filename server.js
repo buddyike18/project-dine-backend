@@ -1414,3 +1414,109 @@ app.get('/api/kds/orders/completed', verifyToken, async (req, res) => {
   }
 });
 
+// Fetch Available Tables
+app.get('/api/tables/available', verifyToken, async (req, res) => {
+  try {
+    const result = await pool.query(
+      'SELECT * FROM tables WHERE status = $1 ORDER BY table_number ASC',
+      ['Available']
+    );
+    res.status(200).json({ available_tables: result.rows });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Assign a Table to a Reservation
+app.post('/api/tables/assign', verifyToken, async (req, res) => {
+  try {
+    const { reservation_id, table_id } = req.body;
+    const result = await pool.query(
+      'UPDATE tables SET status = $1, reservation_id = $2 WHERE id = $3 RETURNING *',
+      ['Occupied', reservation_id, table_id]
+    );
+    res.status(200).json({ message: 'Table assigned successfully', table: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Mark Table as Available
+app.put('/api/tables/:id/status', verifyToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await pool.query(
+      'UPDATE tables SET status = $1, reservation_id = NULL WHERE id = $2 RETURNING *',
+      ['Available', id]
+    );
+    res.status(200).json({ message: 'Table marked as available', table: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Fetch Table Status
+app.get('/api/tables/status', verifyToken, async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM tables ORDER BY table_number ASC');
+    res.status(200).json({ tables: result.rows });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Fetch Employee Performance Data
+app.get('/api/employees/:id/performance', verifyToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await pool.query(
+      'SELECT * FROM employee_performance WHERE employee_id = $1 ORDER BY date DESC',
+      [id]
+    );
+    res.status(200).json({ performance_report: result.rows });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Record Employee Performance
+app.post('/api/employees/:id/performance', verifyToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { date, orders_processed, customer_ratings, sales_generated } = req.body;
+    const result = await pool.query(
+      'INSERT INTO employee_performance (employee_id, date, orders_processed, customer_ratings, sales_generated) VALUES ($1, $2, $3, $4, $5) RETURNING *',
+      [id, date, orders_processed, customer_ratings, sales_generated]
+    );
+    res.status(201).json({ message: 'Employee performance recorded successfully', performance_data: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Update Employee Performance Data
+app.put('/api/employees/:id/performance/:performance_id', verifyToken, async (req, res) => {
+  try {
+    const { id, performance_id } = req.params;
+    const { date, orders_processed, customer_ratings, sales_generated } = req.body;
+    const result = await pool.query(
+      'UPDATE employee_performance SET date = $1, orders_processed = $2, customer_ratings = $3, sales_generated = $4 WHERE id = $5 AND employee_id = $6 RETURNING *',
+      [date, orders_processed, customer_ratings, sales_generated, performance_id, id]
+    );
+    res.status(200).json({ message: 'Employee performance updated successfully', performance_data: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Delete Employee Performance Data
+app.delete('/api/employees/:id/performance/:performance_id', verifyToken, async (req, res) => {
+  try {
+    const { id, performance_id } = req.params;
+    await pool.query('DELETE FROM employee_performance WHERE id = $1 AND employee_id = $2', [performance_id, id]);
+    res.status(200).json({ message: 'Performance record deleted successfully' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
