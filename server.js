@@ -1174,3 +1174,243 @@ app.post('/api/reviews', verifyToken, async (req, res) => {
       res.status(500).json({ error: error.message });
     }
   });
+
+  // Add Customer to Waitlist
+app.post('/api/waitlist', verifyToken, async (req, res) => {
+  try {
+    const { customer_name, party_size } = req.body;
+    const result = await pool.query(
+      'INSERT INTO waitlist (customer_name, party_size, status, created_at) VALUES ($1, $2, $3, NOW()) RETURNING *',
+      [customer_name, party_size, 'Waiting']
+    );
+    res.status(201).json({ message: 'Customer added to waitlist', waitlist_entry: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Fetch Waitlist Entries
+app.get('/api/waitlist', verifyToken, async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM waitlist ORDER BY created_at ASC');
+    res.status(200).json({ waitlist: result.rows });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Notify Waitlist Customer
+app.post('/api/waitlist/:id/notify', verifyToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await pool.query(
+      'UPDATE waitlist SET status = $1 WHERE id = $2 RETURNING *',
+      ['Notified', id]
+    );
+    res.status(200).json({ message: 'Customer notified successfully', waitlist_entry: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Remove Customer from Waitlist
+app.delete('/api/waitlist/:id', verifyToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    await pool.query('DELETE FROM waitlist WHERE id = $1', [id]);
+    res.status(200).json({ message: 'Customer removed from waitlist' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Add Customer Review
+app.post('/api/reviews', verifyToken, async (req, res) => {
+  try {
+    const { user_id, order_id, rating, comment } = req.body;
+    if (rating < 1 || rating > 5) {
+      return res.status(400).json({ error: 'Rating must be between 1 and 5' });
+    }
+    const result = await pool.query(
+      'INSERT INTO reviews (user_id, order_id, rating, comment, created_at) VALUES ($1, $2, $3, $4, NOW()) RETURNING *',
+      [user_id, order_id, rating, comment]
+    );
+    res.status(201).json({ message: 'Review submitted successfully', review: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Fetch Reviews for a Restaurant
+app.get('/api/reviews/:restaurant_id', async (req, res) => {
+  try {
+    const { restaurant_id } = req.params;
+    const result = await pool.query(
+      'SELECT * FROM reviews WHERE restaurant_id = $1 ORDER BY created_at DESC',
+      [restaurant_id]
+    );
+    res.status(200).json({ reviews: result.rows });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Update a Review
+app.put('/api/reviews/:id', verifyToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { rating, comment } = req.body;
+    if (rating < 1 || rating > 5) {
+      return res.status(400).json({ error: 'Rating must be between 1 and 5' });
+    }
+    const result = await pool.query(
+      'UPDATE reviews SET rating = $1, comment = $2 WHERE id = $3 RETURNING *',
+      [rating, comment, id]
+    );
+    res.status(200).json({ message: 'Review updated successfully', review: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Delete a Review
+app.delete('/api/reviews/:id', verifyToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    await pool.query('DELETE FROM reviews WHERE id = $1', [id]);
+    res.status(200).json({ message: 'Review deleted successfully' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Fetch Shifts for an Employee
+app.get('/api/shifts/:employee_id', verifyToken, async (req, res) => {
+  try {
+    const { employee_id } = req.params;
+    const result = await pool.query(
+      'SELECT * FROM shifts WHERE employee_id = $1 ORDER BY shift_date ASC',
+      [employee_id]
+    );
+    res.status(200).json({ shifts: result.rows });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Update a Shift
+app.put('/api/shifts/:id', verifyToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { shift_date, start_time, end_time } = req.body;
+    const result = await pool.query(
+      'UPDATE shifts SET shift_date = $1, start_time = $2, end_time = $3 WHERE id = $4 RETURNING *',
+      [shift_date, start_time, end_time, id]
+    );
+    res.status(200).json({ message: 'Shift updated successfully', shift: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Delete a Shift
+app.delete('/api/shifts/:id', verifyToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    await pool.query('DELETE FROM shifts WHERE id = $1', [id]);
+    res.status(200).json({ message: 'Shift deleted successfully' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Request a Shift Swap
+app.post('/api/shifts/:id/swap', verifyToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { swap_with_employee_id, reason } = req.body;
+    const result = await pool.query(
+      'INSERT INTO shift_swaps (shift_id, swap_with_employee_id, reason, status) VALUES ($1, $2, $3, $4) RETURNING *',
+      [id, swap_with_employee_id, reason, 'Pending']
+    );
+    res.status(201).json({ message: 'Shift swap request submitted', shift_swap: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Approve or Reject a Shift Swap
+app.put('/api/shifts/swap/:swap_id', verifyToken, async (req, res) => {
+  try {
+    const { swap_id } = req.params;
+    const { status } = req.body;
+    if (!['Approved', 'Rejected'].includes(status)) {
+      return res.status(400).json({ error: 'Invalid status. Use Approved or Rejected' });
+    }
+    const result = await pool.query(
+      'UPDATE shift_swaps SET status = $1 WHERE id = $2 RETURNING *',
+      [status, swap_id]
+    );
+    res.status(200).json({ message: `Shift swap request ${status}`, shift_swap: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Fetch Orders for the Kitchen Display System
+app.get('/api/kds/orders', verifyToken, async (req, res) => {
+  try {
+    const result = await pool.query(
+      "SELECT * FROM orders WHERE status IN ('Pending', 'Preparing') ORDER BY created_at ASC"
+    );
+    res.status(200).json({ orders: result.rows });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Update Order Status (e.g., Preparing, Ready, Served)
+app.put('/api/kds/orders/:id/status', verifyToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+    if (!['Pending', 'Preparing', 'Ready', 'Served', 'Completed'].includes(status)) {
+      return res.status(400).json({ error: 'Invalid status. Use Pending, Preparing, Ready, Served, or Completed' });
+    }
+    const result = await pool.query(
+      'UPDATE orders SET status = $1 WHERE id = $2 RETURNING *',
+      [status, id]
+    );
+    res.status(200).json({ message: 'Order status updated successfully', order: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Assign a Kitchen Order to a Chef
+app.put('/api/kds/orders/:id/assign', verifyToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { chef_id } = req.body;
+    const result = await pool.query(
+      'UPDATE orders SET assigned_chef_id = $1 WHERE id = $2 RETURNING *',
+      [chef_id, id]
+    );
+    res.status(200).json({ message: 'Order assigned successfully', order: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Fetch Completed Orders for Review
+app.get('/api/kds/orders/completed', verifyToken, async (req, res) => {
+  try {
+    const result = await pool.query(
+      "SELECT * FROM orders WHERE status = 'Completed' ORDER BY updated_at DESC"
+    );
+    res.status(200).json({ completed_orders: result.rows });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
