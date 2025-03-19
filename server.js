@@ -1520,3 +1520,89 @@ app.delete('/api/employees/:id/performance/:performance_id', verifyToken, async 
   }
 });
 
+// Add Modifications to a Menu Item
+app.post('/api/menu/:id/modifications', verifyToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { modification_name, modification_price } = req.body;
+    const result = await pool.query(
+      'INSERT INTO menu_modifications (menu_id, modification_name, modification_price) VALUES ($1, $2, $3) RETURNING *',
+      [id, modification_name, modification_price]
+    );
+    res.status(201).json({ message: 'Modification added successfully', modification: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Fetch Modifications for a Menu Item
+app.get('/api/menu/:id/modifications', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await pool.query(
+      'SELECT * FROM menu_modifications WHERE menu_id = $1',
+      [id]
+    );
+    res.status(200).json({ modifications: result.rows });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Create User Profile
+app.post('/api/auth/user-profile', verifyToken, async (req, res) => {
+  try {
+    const { name, email, phone } = req.body;
+    const result = await pool.query(
+      'INSERT INTO users (id, name, email, phone) VALUES ($1, $2, $3, $4) RETURNING *',
+      [req.user.uid, name, email, phone]
+    );
+    res.status(201).json({ message: 'User profile created successfully', user: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Create Restaurant Profile
+app.post('/api/auth/restaurant-profile', verifyToken, async (req, res) => {
+  try {
+    const { owner_id, name, location, cuisine, contact } = req.body;
+    const result = await pool.query(
+      'INSERT INTO restaurants (owner_id, name, location, cuisine, contact) VALUES ($1, $2, $3, $4, $5) RETURNING *',
+      [owner_id, name, location, cuisine, contact]
+    );
+    res.status(201).json({ message: 'Restaurant profile created successfully', restaurant: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Update Restaurant Profile
+app.put('/api/auth/restaurant-profile/:id', verifyToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, location, cuisine, contact } = req.body;
+    const result = await pool.query(
+      'UPDATE restaurants SET name = $1, location = $2, cuisine = $3, contact = $4 WHERE id = $5 RETURNING *',
+      [name, location, cuisine, contact, id]
+    );
+    res.status(200).json({ message: 'Restaurant profile updated successfully', restaurant: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Fetch Reservations by Date (Calendar View)
+app.get('/api/reservations/calendar/:date', verifyToken, async (req, res) => {
+  try {
+    const { date } = req.params;
+    const result = await pool.query(
+      'SELECT * FROM reservations WHERE DATE(reservation_time) = $1 ORDER BY reservation_time ASC',
+      [date]
+    );
+    res.status(200).json({ reservations: result.rows });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
