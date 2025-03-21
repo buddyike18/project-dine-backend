@@ -1606,3 +1606,1123 @@ app.get('/api/reservations/calendar/:date', verifyToken, async (req, res) => {
   }
 });
 
+// Fetch Reservations by Status (Upcoming, Ongoing, Completed, Cancelled)
+app.get('/api/reservations/status/:status', verifyToken, async (req, res) => {
+  try {
+    const { status } = req.params;
+    const result = await pool.query(
+      'SELECT * FROM reservations WHERE status = $1 ORDER BY reservation_time ASC',
+      [status]
+    );
+    res.status(200).json({ reservations: result.rows });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Fetch Reservations for a Specific Server
+app.get('/api/reservations/server/:serverId', verifyToken, async (req, res) => {
+  try {
+    const { serverId } = req.params;
+    const result = await pool.query(
+      'SELECT * FROM reservations WHERE server_id = $1 ORDER BY reservation_time ASC',
+      [serverId]
+    );
+    res.status(200).json({ reservations: result.rows });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Fetch Expected People and Tables Reserved
+app.get('/api/reservations/stats', verifyToken, async (req, res) => {
+  try {
+    const result = await pool.query(
+      'SELECT SUM(party_size) AS total_people, COUNT(id) AS total_tables FROM reservations WHERE status IN ($1, $2)',
+      ['Upcoming', 'Ongoing']
+    );
+    res.status(200).json({ stats: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Fetch Hourly Breakdown of Reservations
+app.get('/api/reservations/hourly', verifyToken, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT DATE_TRUNC('hour', reservation_time) AS hour, 
+              COUNT(*) AS total 
+       FROM reservations 
+       GROUP BY DATE_TRUNC('hour', reservation_time) 
+       ORDER BY hour ASC`
+    );
+    res.status(200).json({ hourly_breakdown: result.rows });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Fetch Guest Information & Statistics
+app.get('/api/reservations/guest/:user_id', verifyToken, async (req, res) => {
+  try {
+    const { user_id } = req.params;
+    const result = await pool.query(
+      `SELECT users.profile_picture, users.name, users.birthday, users.phone, users.email,
+              (SELECT COUNT(*) FROM reservations WHERE user_id = $1) AS total_reservations,
+              (SELECT COUNT(*) FROM reservations WHERE user_id = $1 AND status = 'Completed') AS visits,
+              (SELECT COUNT(*) FROM reservations WHERE user_id = $1 AND status = 'Walk-In') AS walk_ins,
+              (SELECT COUNT(*) FROM reservations WHERE user_id = $1 AND status = 'Invited') AS invites,
+              (SELECT COUNT(*) FROM reservations WHERE user_id = $1 AND status = 'No-Show') AS no_shows,
+              (SELECT COUNT(*) FROM reservations WHERE user_id = $1 AND status = 'Cancelled') AS cancellations
+       FROM users WHERE id = $1`,
+      [user_id]
+    );
+    res.status(200).json({ guest: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Fetch Detailed Reservation Information
+app.get('/api/reservations/details/:reservation_id', verifyToken, async (req, res) => {
+  try {
+    const { reservation_id } = req.params;
+    const result = await pool.query(
+      `SELECT r.id, r.party_size, r.reservation_time, r.dining_area, r.table_number, r.notes, 
+              r.cancellation_policy, u.name AS guest_name, u.phone, u.email
+       FROM reservations r 
+       JOIN users u ON r.user_id = u.id 
+       WHERE r.id = $1`,
+      [reservation_id]
+    );
+    res.status(200).json({ reservation: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Send Message to Guest About Reservation
+app.post('/api/reservations/message/:reservation_id', verifyToken, async (req, res) => {
+  try {
+    const { reservation_id } = req.params;
+    const { message } = req.body;
+    const result = await pool.query(
+      `INSERT INTO reservation_messages (reservation_id, message, created_at) VALUES ($1, $2, NOW()) RETURNING *`,
+      [reservation_id, message]
+    );
+    res.status(201).json({ message: 'Message sent successfully', message_data: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Check-In Reservation & Update Table Status to Green
+app.put('/api/reservations/check-in/:reservation_id', verifyToken, async (req, res) => {
+  try {
+    const { reservation_id } = req.params;
+    const result = await pool.query(
+      "UPDATE reservations SET status = 'Ongoing' WHERE id = $1 RETURNING *",
+      [reservation_id]
+    );
+    if (result.rowCount === 0) return res.status(404).json({ error: 'Reservation not found' });
+    
+    // Update table status to 'Occupied (Green)'
+    await pool.query(
+      "UPDATE tables SET status = 'Occupied (Green)' WHERE id = (SELECT table_number FROM reservations WHERE id = $1)",
+      [reservation_id]
+    );
+    res.status(200).json({ message: 'Reservation checked in and table updated', reservation: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Set Dining Time Limit per Reservation
+app.put('/api/reservations/set-time-limit/:reservation_id', verifyToken, async (req, res) => {
+  try {
+    const { reservation_id } = req.params;
+    const { time_limit } = req.body; // Time limit in minutes
+    const result = await pool.query(
+      "UPDATE reservations SET time_limit = $1 WHERE id = $2 RETURNING *",
+      [time_limit, reservation_id]
+    );
+    if (result.rowCount === 0) return res.status(404).json({ error: 'Reservation not found' });
+    res.status(200).json({ message: 'Dining time limit set', reservation: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Fetch Table Status Updates (Yellow = Approaching Limit, Red = Expired)
+app.get('/api/tables/status-update', verifyToken, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT t.id AS table_id, t.status, r.reservation_time, r.time_limit,
+              CASE 
+                  WHEN NOW() >= r.reservation_time + (r.time_limit * INTERVAL '1 minute') THEN 'Occupied (Red)'
+                  WHEN NOW() >= r.reservation_time + ((r.time_limit - 10) * INTERVAL '1 minute') THEN 'Occupied (Yellow)'
+                  ELSE t.status 
+              END AS updated_status
+       FROM tables t
+       LEFT JOIN reservations r ON t.id = r.table_number
+       WHERE t.status LIKE 'Occupied%'`
+    );
+    res.status(200).json({ tables: result.rows });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Fetch All Table Statuses
+app.get('/api/tables/status', verifyToken, async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM tables ORDER BY table_number ASC');
+    res.status(200).json({ tables: result.rows });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Fetch Available Reservation Dates (Next 7 Days)
+app.get('/api/reservations/available-dates', verifyToken, async (req, res) => {
+  try {
+    const result = await pool.query(
+      "SELECT DISTINCT DATE(reservation_time) AS available_date FROM reservations WHERE reservation_time >= NOW() AND reservation_time < NOW() + INTERVAL '7 days' ORDER BY available_date ASC"
+    );
+    res.status(200).json({ available_dates: result.rows });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Fetch Available Reservation Slots for a Given Date
+app.get('/api/reservations/slots/:date', verifyToken, async (req, res) => {
+  try {
+    const { date } = req.params;
+    const result = await pool.query(
+      "SELECT reservation_time FROM reservations WHERE DATE(reservation_time) = $1 ORDER BY reservation_time ASC",
+      [date]
+    );
+    res.status(200).json({ available_slots: result.rows });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Fetch Available Party Size Options
+app.get('/api/reservations/party-sizes', verifyToken, async (req, res) => {
+  try {
+    res.status(200).json({ party_sizes: [1, 2, 3, 4, 5, 6, 7, 'More'] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Create a New Reservation
+app.post('/api/reservations/new', verifyToken, async (req, res) => {
+  try {
+    const { user_id, restaurant_id, party_size, reservation_time, server_id } = req.body;
+    const result = await pool.query(
+      "INSERT INTO reservations (user_id, restaurant_id, party_size, reservation_time, status, server_id) VALUES ($1, $2, $3, $4, 'Upcoming', $5) RETURNING *",
+      [user_id, restaurant_id, party_size, reservation_time, server_id]
+    );
+    res.status(201).json({ message: 'Reservation created successfully', reservation: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Fetch Available Time Slots for Selected Date and Party Size
+app.get('/api/reservations/slots/:date/:party_size', verifyToken, async (req, res) => {
+  try {
+    const { date, party_size } = req.params;
+    const result = await pool.query(
+      `SELECT DISTINCT reservation_time 
+       FROM reservations 
+       WHERE DATE(reservation_time) = $1 
+       AND party_size >= $2 
+       AND status = 'Available' 
+       ORDER BY reservation_time ASC`,
+      [date, party_size]
+    );
+    res.status(200).json({ available_slots: result.rows });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Fetch Available Dining Options for Selected Time Slot
+app.get('/api/reservations/dining-options/:date/:time/:party_size', verifyToken, async (req, res) => {
+  try {
+    const { date, time, party_size } = req.params;
+    const result = await pool.query(
+      `SELECT dr.name AS dining_room, 
+              COUNT(t.id) AS available_tables, 
+              dr.total_tables 
+       FROM tables t 
+       JOIN dining_rooms dr ON t.dining_room_id = dr.id 
+       WHERE dr.capacity >= $1 
+       AND t.status = 'Available' 
+       GROUP BY dr.name, dr.total_tables`,
+      [party_size]
+    );
+    res.status(200).json({ dining_options: result.rows, selected_time: time });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Search for Existing Guest by Name, Phone, or Email
+app.get('/api/guests/search', verifyToken, async (req, res) => {
+  try {
+    const { query } = req.query;
+    const result = await pool.query(
+      `SELECT id, name, phone, email FROM guests 
+       WHERE name ILIKE $1 OR phone ILIKE $1 OR email ILIKE $1 
+       LIMIT 10`,
+      [`%${query}%`]
+    );
+    res.status(200).json({ guests: result.rows });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Add a New Guest if Not Found
+app.post('/api/guests/new', verifyToken, async (req, res) => {
+  try {
+    const { name, phone, email } = req.body;
+    const result = await pool.query(
+      `INSERT INTO guests (name, phone, email) VALUES ($1, $2, $3) RETURNING *`,
+      [name, phone, email]
+    );
+    res.status(201).json({ message: 'Guest added successfully', guest: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Fetch Reservation Summary Before Completion
+app.get('/api/reservations/summary/:reservation_id', verifyToken, async (req, res) => {
+  try {
+    const { reservation_id } = req.params;
+    const result = await pool.query(
+      `SELECT r.id, r.reservation_time, r.party_size, r.dining_room, r.table_number, g.name AS guest_name 
+       FROM reservations r 
+       LEFT JOIN guests g ON r.guest_id = g.id 
+       WHERE r.id = $1`,
+      [reservation_id]
+    );
+    res.status(200).json({ reservation_summary: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Assign Guest to a Reservation
+app.put('/api/reservations/assign-guest/:reservation_id', verifyToken, async (req, res) => {
+  try {
+    const { reservation_id } = req.params;
+    const { guest_id } = req.body;
+    const result = await pool.query(
+      `UPDATE reservations SET guest_id = $1 WHERE id = $2 RETURNING *`,
+      [guest_id, reservation_id]
+    );
+    res.status(200).json({ message: 'Guest assigned successfully', reservation: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Update Reservation with Additional Owner & Notes
+app.put('/api/reservations/update/:reservation_id', verifyToken, async (req, res) => {
+  try {
+    const { reservation_id } = req.params;
+    const { additional_owner, notes } = req.body;
+    const result = await pool.query(
+      `UPDATE reservations SET additional_owner = $1, notes = $2 WHERE id = $3 RETURNING *`,
+      [additional_owner, notes, reservation_id]
+    );
+    res.status(200).json({ message: 'Reservation updated successfully', reservation: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Complete Reservation & Show Success Message
+app.put('/api/reservations/complete/:reservation_id', verifyToken, async (req, res) => {
+  try {
+    const { reservation_id } = req.params;
+    const result = await pool.query(
+      `UPDATE reservations SET status = 'Confirmed' WHERE id = $1 RETURNING *`,
+      [reservation_id]
+    );
+    const reservation = result.rows[0];
+    res.status(200).json({ message: `Reservation booked! ${reservation.guest_name}, ${reservation.reservation_time}` });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Search for an Existing Guest
+app.get('/api/walk-in/search', verifyToken, async (req, res) => {
+  try {
+    const { query } = req.query;
+    const result = await pool.query(
+      `SELECT id, name, phone, email FROM guests 
+       WHERE name ILIKE $1 OR phone ILIKE $1 OR email ILIKE $1 
+       LIMIT 10`,
+      [`%${query}%`]
+    );
+    res.status(200).json({ guests: result.rows });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Add a New Guest if Not Found
+app.post('/api/walk-in/new', verifyToken, async (req, res) => {
+  try {
+    const { name, phone, email } = req.body;
+    const result = await pool.query(
+      `INSERT INTO guests (name, phone, email) VALUES ($1, $2, $3) RETURNING *`,
+      [name, phone, email]
+    );
+    res.status(201).json({ message: 'Guest added successfully', guest: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Create a Walk-In Reservation with Optional Reservation Notes
+app.post('/api/walk-in/reserve', verifyToken, async (req, res) => {
+  try {
+    const { guest_id, party_size, wait_time, notes } = req.body;
+    let assigned_table = null;
+
+    // Check for an available table
+    const tableResult = await pool.query(
+      `SELECT id FROM tables WHERE status = 'Available' LIMIT 1`
+    );
+
+    if (tableResult.rows.length > 0) {
+      assigned_table = tableResult.rows[0].id;
+      await pool.query(
+        `UPDATE tables SET status = 'Occupied' WHERE id = $1`,
+        [assigned_table]
+      );
+    }
+
+    // Create reservation with or without wait time
+    const reservationResult = await pool.query(
+      `INSERT INTO reservations (guest_id, party_size, reservation_time, status, table_number, wait_time, notes) 
+       VALUES ($1, $2, NOW(), $3, $4, $5, $6) RETURNING *`,
+      [guest_id, party_size, assigned_table ? 'Ongoing' : 'Waitlist', assigned_table, wait_time, notes]
+    );
+
+    res.status(201).json({
+      message: assigned_table ? 'Walk-in assigned to a table' : 'Walk-in added to waitlist',
+      reservation: reservationResult.rows[0],
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Assign a Walk-In Reservation to a Table (Drag & Drop)
+app.put('/api/walk-in/assign-table/:reservation_id', verifyToken, async (req, res) => {
+  try {
+    const { reservation_id } = req.params;
+    const { table_id } = req.body;
+    await pool.query(
+      `UPDATE reservations SET status = 'Ongoing', table_number = $1 WHERE id = $2`,
+      [table_id, reservation_id]
+    );
+    await pool.query(
+      `UPDATE tables SET status = 'Occupied' WHERE id = $1`,
+      [table_id]
+    );
+    res.status(200).json({ message: 'Walk-in assigned to table successfully' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Update Wait Time for Walk-In Reservation
+app.put('/api/walk-in/update-wait/:reservation_id', verifyToken, async (req, res) => {
+  try {
+    const { reservation_id } = req.params;
+    const { wait_time } = req.body;
+    const result = await pool.query(
+      `UPDATE reservations SET wait_time = $1 WHERE id = $2 RETURNING *`,
+      [wait_time, reservation_id]
+    );
+    res.status(200).json({ message: 'Wait time updated successfully', reservation: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Assign a Four-Digit Login Code to a New Employee
+app.post('/api/employees/assign-code', verifyToken, async (req, res) => {
+  try {
+    const { employee_id, login_code } = req.body;
+    if (login_code.length !== 4 || isNaN(login_code)) {
+      return res.status(400).json({ error: 'Login code must be a 4-digit number' });
+    }
+    const result = await pool.query(
+      `UPDATE employees SET login_code = $1 WHERE id = $2 RETURNING *`,
+      [login_code, employee_id]
+    );
+    res.status(200).json({ message: 'Login code assigned successfully', employee: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Employee Login via Four-Digit Code
+app.post('/api/employees/login', async (req, res) => {
+  try {
+    const { login_code } = req.body;
+    const result = await pool.query(
+      `SELECT id, name, role FROM employees WHERE login_code = $1`,
+      [login_code]
+    );
+    if (result.rows.length === 0) {
+      return res.status(401).json({ error: 'Invalid login code' });
+    }
+    res.status(200).json({ message: 'Login successful', employee: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Fetch Employee Roles
+app.get('/api/employees/:employee_id/roles', verifyToken, async (req, res) => {
+  try {
+    const { employee_id } = req.params;
+    const result = await pool.query(
+      `SELECT role FROM employee_roles WHERE employee_id = $1`,
+      [employee_id]
+    );
+    res.status(200).json({ roles: result.rows.map(row => row.role) });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Clock In Employee
+app.post('/api/employees/clock-in', verifyToken, async (req, res) => {
+  try {
+    const { employee_id, role } = req.body;
+    const result = await pool.query(
+      `INSERT INTO employee_timesheets (employee_id, role, clock_in, week_start) 
+       VALUES ($1, $2, NOW(), DATE_TRUNC('week', NOW())) RETURNING *`,
+      [employee_id, role]
+    );
+    res.status(201).json({ message: 'Clock-in successful', timesheet: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Clock Out Employee
+app.post('/api/employees/clock-out', verifyToken, async (req, res) => {
+  try {
+    const { employee_id } = req.body;
+    const result = await pool.query(
+      `UPDATE employee_timesheets SET clock_out = NOW(), hours_worked = EXTRACT(EPOCH FROM (NOW() - clock_in)) / 3600 
+       WHERE employee_id = $1 AND clock_out IS NULL RETURNING *`,
+      [employee_id]
+    );
+    res.status(200).json({ message: 'Clock-out successful', timesheet: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Start Break
+app.post('/api/employees/start-break', verifyToken, async (req, res) => {
+  try {
+    const { employee_id } = req.body;
+    await pool.query(
+      `UPDATE employee_timesheets SET break_start = NOW() WHERE employee_id = $1 AND clock_out IS NULL AND break_start IS NULL`,
+      [employee_id]
+    );
+    res.status(200).json({ message: 'Break started successfully' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// End Break
+app.post('/api/employees/end-break', verifyToken, async (req, res) => {
+  try {
+    const { employee_id } = req.body;
+    await pool.query(
+      `UPDATE employee_timesheets SET break_end = NOW(), break_duration = EXTRACT(EPOCH FROM (NOW() - break_start)) / 3600 
+       WHERE employee_id = $1 AND clock_out IS NULL AND break_end IS NULL`,
+      [employee_id]
+    );
+    res.status(200).json({ message: 'Break ended successfully' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Fetch Weekly Logged Hours
+app.get('/api/employees/:employee_id/timesheets', verifyToken, async (req, res) => {
+  try {
+    const { employee_id } = req.params;
+    const result = await pool.query(
+      `SELECT clock_in, clock_out, hours_worked, break_duration, role 
+       FROM employee_timesheets 
+       WHERE employee_id = $1 AND week_start = DATE_TRUNC('week', NOW()) 
+       ORDER BY clock_in ASC`,
+      [employee_id]
+    );
+    res.status(200).json({ timesheets: result.rows });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Fetch Shift Reviews
+app.get('/api/employees/:employee_id/reviews', verifyToken, async (req, res) => {
+  try {
+    const { employee_id } = req.params;
+    const result = await pool.query(
+      `SELECT shift_date, rating, comments FROM employee_reviews WHERE employee_id = $1 ORDER BY shift_date DESC`,
+      [employee_id]
+    );
+    res.status(200).json({ reviews: result.rows });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Switch User (Log Out Current User)
+app.post('/api/employees/switch-user', verifyToken, async (req, res) => {
+  try {
+    res.status(200).json({ message: 'User switched successfully' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Fetch Available POS System Tabs Based on Role
+app.get('/api/employees/:employee_id/tabs', verifyToken, async (req, res) => {
+  try {
+    const { employee_id } = req.params;
+    const result = await pool.query(
+      `SELECT role FROM employee_roles WHERE employee_id = $1`,
+      [employee_id]
+    );
+    
+    const roles = result.rows.map(row => row.role);
+    const accessibleTabs = [];
+    
+    accessibleTabs.push({ name: 'Employee Time Sheet', access: true }); // Accessible to all
+    
+    if (roles.includes('host') || roles.includes('manager') || roles.includes('owner')) {
+      accessibleTabs.push({ name: 'Reservations', access: true });
+    }
+    if (roles.includes('server') || roles.includes('bartender') || roles.includes('manager') || roles.includes('owner')) {
+      accessibleTabs.push({ name: 'Ordering', access: true });
+    }
+    if (roles.includes('kitchen') || roles.includes('bartender') || roles.includes('manager') || roles.includes('owner')) {
+      accessibleTabs.push({ name: 'Kitchen Display System', access: true });
+    }
+    if (roles.includes('server') || roles.includes('bartender') || roles.includes('manager') || roles.includes('owner')) {
+      accessibleTabs.push({ name: 'Transaction Report', access: true });
+    }
+    
+    res.status(200).json({ tabs: accessibleTabs });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Fetch Dining Room Floor Plan with Table Status
+app.get('/api/ordering/floor-plan/:room_id', verifyToken, async (req, res) => {
+  try {
+    const { room_id } = req.params;
+    const result = await pool.query(
+      `SELECT t.id AS table_id, t.number AS table_number, t.status, t.capacity, t.has_seat_numbers 
+       FROM tables t WHERE t.dining_room_id = $1 ORDER BY t.number ASC`,
+      [room_id]
+    );
+    res.status(200).json({ tables: result.rows });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Fetch Seat Numbers for Large Tables (10+ seats)
+app.get('/api/ordering/seats/:table_id', verifyToken, async (req, res) => {
+  try {
+    const { table_id } = req.params;
+    const result = await pool.query(
+      `SELECT seat_number FROM table_seats WHERE table_id = $1 ORDER BY seat_number ASC`,
+      [table_id]
+    );
+    res.status(200).json({ seats: result.rows });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Place Order for a Specific Table
+app.post('/api/ordering/place-order', verifyToken, async (req, res) => {
+  try {
+    const { table_id, seat_number, items } = req.body;
+    const result = await pool.query(
+      `INSERT INTO orders (table_id, seat_number, items, status, created_at) 
+       VALUES ($1, $2, $3, 'Pending', NOW()) RETURNING *`,
+      [table_id, seat_number, JSON.stringify(items)]
+    );
+    res.status(201).json({ message: 'Order placed successfully', order: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Quick Order (Bypass Table Selection)
+app.post('/api/ordering/quick-order', verifyToken, async (req, res) => {
+  try {
+    const { items } = req.body;
+    const result = await pool.query(
+      `INSERT INTO orders (table_id, seat_number, items, status, created_at) 
+       VALUES (NULL, NULL, $1, 'Pending', NOW()) RETURNING *`,
+      [JSON.stringify(items)]
+    );
+    res.status(201).json({ message: 'Quick order placed successfully', order: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Access Check Information (Bill, Active Orders, etc.)
+app.get('/api/ordering/check-access/:table_id', verifyToken, async (req, res) => {
+  try {
+    const { table_id } = req.params;
+    const result = await pool.query(
+      `SELECT o.id AS order_id, o.items, o.status, o.created_at 
+       FROM orders o WHERE o.table_id = $1 AND o.status != 'Completed' ORDER BY o.created_at ASC`,
+      [table_id]
+    );
+    res.status(200).json({ active_orders: result.rows });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Switch User (Log Out Current User)
+app.post('/api/employees/switch-user', verifyToken, async (req, res) => {
+  try {
+    res.status(200).json({ message: 'User switched successfully' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Add Item to Order Screen (Draft Order)
+app.post('/api/order/add-item', verifyToken, async (req, res) => {
+  try {
+    const { check_id, item, category, seat_number } = req.body;
+    const result = await pool.query(
+      `INSERT INTO order_items (check_id, item, category, seat_number, status) 
+       VALUES ($1, $2, $3, $4, 'Pending') RETURNING *`,
+      [check_id, item, category, seat_number]
+    );
+    res.status(201).json({ message: 'Item added to draft order', order_item: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Update Tab Name
+app.put('/api/order/tab-name/:check_id', verifyToken, async (req, res) => {
+  try {
+    const { check_id } = req.params;
+    const { tab_name } = req.body;
+    const result = await pool.query(
+      `UPDATE checks SET tab_name = $1 WHERE id = $2 RETURNING *`,
+      [tab_name, check_id]
+    );
+    res.status(200).json({ message: 'Tab name updated', check: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Submit Order (Stay or Send)
+app.post('/api/order/submit', verifyToken, async (req, res) => {
+  try {
+    const { check_id, action } = req.body; // action = 'stay' or 'send'
+    await pool.query(
+      `UPDATE order_items SET status = 'Sent' WHERE check_id = $1 AND status = 'Pending'`,
+      [check_id]
+    );
+    res.status(200).json({ message: `Order submitted with '${action}' action.` });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Fetch Order Summary (Drinks & Food)
+app.get('/api/order/summary/:check_id', verifyToken, async (req, res) => {
+  try {
+    const { check_id } = req.params;
+    const result = await pool.query(
+      `SELECT item, category, seat_number, status 
+       FROM order_items WHERE check_id = $1 ORDER BY category, seat_number`,
+      [check_id]
+    );
+    res.status(200).json({ summary: result.rows });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Calculate Subtotal and Tax
+app.get('/api/order/total/:check_id', verifyToken, async (req, res) => {
+  try {
+    const { check_id } = req.params;
+    const result = await pool.query(
+      `SELECT SUM(price) AS subtotal, SUM(price * 0.08) AS tax 
+       FROM order_items WHERE check_id = $1`,
+      [check_id]
+    );
+    res.status(200).json({ totals: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Split Check or Items
+app.post('/api/order/split', verifyToken, async (req, res) => {
+  try {
+    const { original_check_id, items_to_split } = req.body;
+    const newCheck = await pool.query(
+      `INSERT INTO checks (created_at) VALUES (NOW()) RETURNING id`
+    );
+    const newCheckId = newCheck.rows[0].id;
+
+    await Promise.all(items_to_split.map(id => {
+      return pool.query(`UPDATE order_items SET check_id = $1 WHERE id = $2`, [newCheckId, id]);
+    }));
+
+    res.status(200).json({ message: 'Check/items split successfully', new_check_id: newCheckId });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Pay for a Check
+app.post('/api/order/pay', verifyToken, async (req, res) => {
+  try {
+    const { check_id, payment_method, amount } = req.body;
+    await pool.query(
+      `INSERT INTO payments (check_id, method, amount, paid_at) VALUES ($1, $2, $3, NOW())`,
+      [check_id, payment_method, amount]
+    );
+    await pool.query(
+      `UPDATE checks SET status = 'Paid' WHERE id = $1`,
+      [check_id]
+    );
+    res.status(200).json({ message: 'Payment processed successfully' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Print Check
+app.get('/api/order/print/:check_id', verifyToken, async (req, res) => {
+  try {
+    const { check_id } = req.params;
+    // Simulate print logic
+    res.status(200).json({ message: `Tab ${check_id} sent to printer.` });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get Main Categories (Food/Drinks)
+app.get('/api/menu/main-categories', verifyToken, async (req, res) => {
+  try {
+    const result = await pool.query(`SELECT DISTINCT main_category FROM menu_items`);
+    res.status(200).json({ main_categories: result.rows });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get Subcategories by Main Category
+app.get('/api/menu/subcategories/:main_category', verifyToken, async (req, res) => {
+  try {
+    const { main_category } = req.params;
+    const result = await pool.query(
+      `SELECT DISTINCT subcategory FROM menu_items WHERE main_category = $1`,
+      [main_category]
+    );
+    res.status(200).json({ subcategories: result.rows });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get Menu Items by Subcategory
+app.get('/api/menu/items/:subcategory', verifyToken, async (req, res) => {
+  try {
+    const { subcategory } = req.params;
+    const result = await pool.query(
+      `SELECT id, name, price FROM menu_items WHERE subcategory = $1`,
+      [subcategory]
+    );
+    res.status(200).json({ items: result.rows });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get Modifiers by Menu Item
+app.get('/api/menu/modifiers/:item_id', verifyToken, async (req, res) => {
+  try {
+    const { item_id } = req.params;
+    const result = await pool.query(
+      `SELECT * FROM item_modifiers WHERE item_id = $1 ORDER BY step_order ASC`,
+      [item_id]
+    );
+    res.status(200).json({ modifier_steps: result.rows });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Add Modifier to Order Item
+app.post('/api/order/modifier', verifyToken, async (req, res) => {
+  try {
+    const { order_item_id, modifier_name, modifier_price } = req.body;
+    const result = await pool.query(
+      `INSERT INTO order_item_modifiers (order_item_id, name, price) VALUES ($1, $2, $3) RETURNING *`,
+      [order_item_id, modifier_name, modifier_price]
+    );
+    res.status(200).json({ message: 'Modifier added', modifier: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Add Dining Option (Dine In / Take Out)
+app.post('/api/order/dining-option', verifyToken, async (req, res) => {
+  try {
+    const { order_item_id, option } = req.body;
+    const result = await pool.query(
+      `UPDATE order_items SET dining_option = $1 WHERE id = $2 RETURNING *`,
+      [option, order_item_id]
+    );
+    res.status(200).json({ message: 'Dining option updated', item: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Add Special Request
+app.post('/api/order/special-request', verifyToken, async (req, res) => {
+  try {
+    const { order_item_id, request } = req.body;
+    const result = await pool.query(
+      `UPDATE order_items SET special_request = $1 WHERE id = $2 RETURNING *`,
+      [request, order_item_id]
+    );
+    res.status(200).json({ message: 'Special request added', item: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Apply Discount to Item
+app.post('/api/order/discount', verifyToken, async (req, res) => {
+  try {
+    const { order_item_id, discount_name, discount_amount } = req.body;
+    const result = await pool.query(
+      `INSERT INTO order_item_discounts (order_item_id, discount_name, discount_amount) VALUES ($1, $2, $3) RETURNING *`,
+      [order_item_id, discount_name, discount_amount]
+    );
+    res.status(200).json({ message: 'Discount applied', discount: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get Checks by Status and Optional Filters
+app.get('/api/checks/:employee_id/:status', verifyToken, async (req, res) => {
+  try {
+    const { employee_id, status } = req.params;
+    const { search, sort } = req.query;
+
+    let baseQuery = `SELECT c.id AS check_id, c.tab_name, c.dining_option, c.status, c.created_at, c.closed_at, 
+                        COALESCE(SUM(oi.price + COALESCE(m.price, 0) - COALESCE(d.discount_amount, 0)), 0) AS total_due,
+                        STRING_AGG(oi.item, ', ') AS ordered_items
+                     FROM checks c
+                     LEFT JOIN order_items oi ON c.id = oi.check_id
+                     LEFT JOIN order_item_modifiers m ON oi.id = m.order_item_id
+                     LEFT JOIN order_item_discounts d ON oi.id = d.order_item_id
+                     WHERE c.server_id = $1 AND c.status = $2`;
+
+    const params = [employee_id, status];
+    if (search) {
+      baseQuery += ` AND (CAST(c.id AS TEXT) ILIKE $3 OR c.tab_name ILIKE $3)`;
+      params.push(`%${search}%`);
+    }
+
+    baseQuery += ` GROUP BY c.id`;
+
+    if (sort === 'recent') {
+      baseQuery += ` ORDER BY c.created_at DESC`;
+    } else if (sort === 'oldest') {
+      baseQuery += ` ORDER BY c.created_at ASC`;
+    } else {
+      baseQuery += ` ORDER BY c.id DESC`;
+    }
+
+    const result = await pool.query(baseQuery, params);
+    res.status(200).json({ checks: result.rows });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get Check Details
+app.get('/api/checks/detail/:check_id', verifyToken, async (req, res) => {
+  try {
+    const { check_id } = req.params;
+    const result = await pool.query(
+      `SELECT c.id AS check_id, c.tab_name, c.dining_option, c.status, c.created_at, c.closed_at,
+              SUM(oi.price + COALESCE(m.price, 0) - COALESCE(d.discount_amount, 0)) AS subtotal,
+              ROUND(SUM(oi.price + COALESCE(m.price, 0) - COALESCE(d.discount_amount, 0)) * 0.08, 2) AS tax,
+              ROUND(SUM(oi.price + COALESCE(m.price, 0) - COALESCE(d.discount_amount, 0)) * 1.08, 2) AS total
+       FROM checks c
+       LEFT JOIN order_items oi ON c.id = oi.check_id
+       LEFT JOIN order_item_modifiers m ON oi.id = m.order_item_id
+       LEFT JOIN order_item_discounts d ON oi.id = d.order_item_id
+       WHERE c.id = $1
+       GROUP BY c.id`,
+      [check_id]
+    );
+    res.status(200).json({ check: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Log Tip & Close Check
+app.post('/api/checks/close', verifyToken, async (req, res) => {
+  try {
+    const { check_id, tip_amount } = req.body;
+    await pool.query(
+      `UPDATE checks SET tip_amount = $1, status = 'Paid', closed_at = NOW() WHERE id = $2 AND status = 'Closed'`,
+      [tip_amount, check_id]
+    );
+    res.status(200).json({ message: 'Tip logged and check closed' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Automatically Close Check on Cash Payment (No Tip)
+app.post('/api/checks/pay-cash', verifyToken, async (req, res) => {
+  try {
+    const { check_id } = req.body;
+    await pool.query(
+      `UPDATE checks SET status = 'Paid', closed_at = NOW() WHERE id = $1 AND status = 'Closed'`,
+      [check_id]
+    );
+    res.status(200).json({ message: 'Cash check marked as paid' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Predict Common Tender Amounts
+app.get('/api/payment/suggestions/:amount', verifyToken, (req, res) => {
+  try {
+    const amount = parseFloat(req.params.amount);
+    const suggestions = [
+      Math.ceil(amount),
+      Math.ceil(amount / 5) * 5,
+      Math.ceil(amount / 10) * 10
+    ];
+    res.status(200).json({ suggestions });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Submit Payment Info
+app.post('/api/payment/submit', verifyToken, async (req, res) => {
+  try {
+    const { check_id, payment_type, amount_tendered, tip_amount } = req.body;
+    await pool.query(
+      `INSERT INTO payments (check_id, method, amount, tip, paid_at) VALUES ($1, $2, $3, $4, NOW())`,
+      [check_id, payment_type, amount_tendered, tip_amount]
+    );
+    await pool.query(
+      `UPDATE checks SET status = 'Closed', closed_at = NOW(), tip_amount = $1 WHERE id = $2`,
+      [tip_amount, check_id]
+    );
+    res.status(200).json({ message: 'Payment recorded successfully' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Simulate Card Processing Request
+app.post('/api/payment/card/initiate', verifyToken, async (req, res) => {
+  try {
+    const { check_id } = req.body;
+    const check = await pool.query(
+      `SELECT c.id, c.tab_name,
+              SUM(oi.price + COALESCE(m.price, 0) - COALESCE(d.discount_amount, 0)) AS subtotal,
+              ROUND(SUM(oi.price + COALESCE(m.price, 0) - COALESCE(d.discount_amount, 0)) * 0.08, 2) AS tax,
+              ROUND(SUM(oi.price + COALESCE(m.price, 0) - COALESCE(d.discount_amount, 0)) * 1.08, 2) AS total
+       FROM checks c
+       LEFT JOIN order_items oi ON c.id = oi.check_id
+       LEFT JOIN order_item_modifiers m ON oi.id = m.order_item_id
+       LEFT JOIN order_item_discounts d ON oi.id = d.order_item_id
+       WHERE c.id = $1 GROUP BY c.id`,
+      [check_id]
+    );
+    res.status(200).json({ payment_prompt: 'Insert, Swipe, or Tap Card', card_payment: check.rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Type-In Card Number (Manual Entry)
+app.post('/api/payment/card/manual', verifyToken, async (req, res) => {
+  try {
+    const { check_id, card_number, exp_date, cvv, tip_amount } = req.body;
+    await pool.query(
+      `INSERT INTO payments (check_id, method, amount, tip, paid_at, details)
+       VALUES ($1, 'Card (Manual)', (SELECT ROUND(SUM(oi.price + COALESCE(m.price,0) - COALESCE(d.discount_amount,0)) * 1.08, 2)
+       FROM order_items oi
+       LEFT JOIN order_item_modifiers m ON oi.id = m.order_item_id
+       LEFT JOIN order_item_discounts d ON oi.id = d.order_item_id
+       WHERE oi.check_id = $1), $2, NOW(), $3)`,
+      [check_id, tip_amount, `Card: ${card_number.slice(-4)}, Exp: ${exp_date}`]
+    );
+    await pool.query(`UPDATE checks SET status = 'Closed', closed_at = NOW(), tip_amount = $1 WHERE id = $2`, [tip_amount, check_id]);
+    res.status(200).json({ message: 'Manual card payment accepted' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Cancel Card Payment Screen (Reset)
+app.post('/api/payment/card/cancel', verifyToken, (req, res) => {
+  res.status(200).json({ message: 'Card payment cancelled and screen reset' });
+});
+
