@@ -2726,3 +2726,107 @@ app.post('/api/payment/card/cancel', verifyToken, (req, res) => {
   res.status(200).json({ message: 'Card payment cancelled and screen reset' });
 });
 
+// CHECK: Tip Update
+app.put('/api/checks/:check_id/tip', verifyToken, async (req, res) => {
+  const { tip_amount } = req.body;
+  const { check_id } = req.params;
+  try {
+    await pool.query(`UPDATE checks SET tip_amount = $1 WHERE id = $2`, [tip_amount, check_id]);
+    res.status(200).json({ message: 'Tip updated.' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// CHECK: Get Check Items
+app.get('/api/checks/:check_id/items', verifyToken, async (req, res) => {
+  const { check_id } = req.params;
+  try {
+    const result = await pool.query(`SELECT * FROM order_items WHERE check_id = $1`, [check_id]);
+    res.status(200).json({ items: result.rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// CHECK: Split Items to New Check
+app.post('/api/checks/split', verifyToken, async (req, res) => {
+  const { check_id, item_ids } = req.body;
+  try {
+    const newCheck = await pool.query(`INSERT INTO checks (status, created_at) VALUES ('Open', NOW()) RETURNING id`);
+    const newCheckId = newCheck.rows[0].id;
+    for (const id of item_ids) {
+      await pool.query(`UPDATE order_items SET check_id = $1 WHERE id = $2`, [newCheckId, id]);
+    }
+    res.status(200).json({ new_check_id: newCheckId });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// CARD: Auto-Detect Payment
+app.post('/api/payment/card/auto-detect', verifyToken, async (req, res) => {
+  const { check_id, amount, tip_amount, card_last4 } = req.body;
+  try {
+    await pool.query(`INSERT INTO payments (check_id, method, amount, tip, paid_at, details)
+      VALUES ($1, 'Card (Auto)', $2, $3, NOW(), $4)`, [check_id, amount, tip_amount, `**** **** **** ${card_last4}`]);
+    await pool.query(`UPDATE checks SET status = 'Closed', closed_at = NOW(), tip_amount = $1 WHERE id = $2`, [tip_amount, check_id]);
+    res.status(200).json({ message: 'Card payment auto-detected and recorded' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// EMPLOYEE: Select Active Role
+app.put('/api/employees/:id/role-active', verifyToken, async (req, res) => {
+  const { id } = req.params;
+  const { role } = req.body;
+  try {
+    await pool.query(`UPDATE employees SET active_role = $1 WHERE id = $2`, [role, id]);
+    res.status(200).json({ message: 'Active role selected.' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DINING: Get Rooms
+app.get('/api/layout/rooms', verifyToken, async (req, res) => {
+  try {
+    const result = await pool.query(`SELECT * FROM dining_rooms ORDER BY name ASC`);
+    res.status(200).json({ rooms: result.rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DINING: Get Floor Plan
+app.get('/api/layout/:room_id/floor-plan', verifyToken, async (req, res) => {
+  const { room_id } = req.params;
+  try {
+    const result = await pool.query(`SELECT * FROM tables WHERE dining_room_id = $1 ORDER BY number ASC`, [room_id]);
+    res.status(200).json({ floor_plan: result.rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// RECEIPT: Print Preview
+app.get('/api/order/print-preview/:check_id', verifyToken, async (req, res) => {
+  const { check_id } = req.params;
+  try {
+    const result = await pool.query(`SELECT * FROM order_items WHERE check_id = $1`, [check_id]);
+    res.status(200).json({ preview: result.rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POS: Switch User Session
+app.post('/api/pos/session/switch-user', verifyToken, (req, res) => {
+  res.status(200).json({ message: 'Session ended. Ready for next login.' });
+});
+
+// POS: Button Config
+app.get('/api/pos/config/buttons', verifyToken, (req, res) => {
+  res.status(200).json({ buttons: ['Pay', 'Split', 'Print', 'Checks', 'Quick Order', 'Switch User'] });
+});
