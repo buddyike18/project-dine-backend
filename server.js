@@ -2830,3 +2830,132 @@ app.post('/api/pos/session/switch-user', verifyToken, (req, res) => {
 app.get('/api/pos/config/buttons', verifyToken, (req, res) => {
   res.status(200).json({ buttons: ['Pay', 'Split', 'Print', 'Checks', 'Quick Order', 'Switch User'] });
 });
+
+// KDS: Get Active Orders (Expo View)
+app.get('/api/kds/orders', verifyToken, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT o.id AS order_id, o.check_id, o.created_at, o.dining_option, o.tab_name, o.server_name,
+             oi.id AS item_id, oi.item, oi.subcategory, oi.status, oi.completed_at
+      FROM orders o
+      JOIN order_items oi ON o.id = oi.order_id
+      WHERE o.status != 'Fulfilled'
+      ORDER BY o.created_at ASC
+    `);
+    res.status(200).json({ orders: result.rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// KDS: Mark Item Complete
+app.post('/api/kds/item/:item_id/complete', verifyToken, async (req, res) => {
+  const { item_id } = req.params;
+  try {
+    await pool.query(`UPDATE order_items SET status = 'Complete', completed_at = NOW() WHERE id = $1`, [item_id]);
+    res.status(200).json({ message: 'Item marked complete.' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// KDS: Recall Order
+app.post('/api/kds/order/:order_id/recall', verifyToken, async (req, res) => {
+  const { order_id } = req.params;
+  try {
+    await pool.query(`UPDATE orders SET status = 'Recalled', recalled_at = NOW() WHERE id = $1`, [order_id]);
+    res.status(200).json({ message: 'Order recalled to KDS.' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// KDS: Fulfilled Orders
+app.get('/api/kds/orders/fulfilled', verifyToken, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT * FROM orders WHERE status = 'Fulfilled' ORDER BY fulfilled_at DESC LIMIT 50
+    `);
+    res.status(200).json({ fulfilled_orders: result.rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// KDS: View Orders by Station
+app.get('/api/kds/station/:station_name', verifyToken, async (req, res) => {
+  const { station_name } = req.params;
+  try {
+    const result = await pool.query(`
+      SELECT o.id AS order_id, oi.*
+      FROM orders o
+      JOIN order_items oi ON o.id = oi.order_id
+      WHERE oi.station = $1 AND o.status != 'Fulfilled'
+      ORDER BY o.created_at ASC
+    `, [station_name]);
+    res.status(200).json({ station_orders: result.rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// KDS: All Day View
+app.get('/api/kds/view/all-day', verifyToken, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT item, subcategory, COUNT(*) AS quantity
+      FROM order_items
+      WHERE status != 'Complete'
+      GROUP BY item, subcategory
+      ORDER BY quantity DESC
+    `);
+    res.status(200).json({ summary: result.rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// KDS: Expo View
+app.get('/api/kds/view/expo', verifyToken, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT * FROM orders WHERE status != 'Fulfilled' ORDER BY created_at ASC
+    `);
+    res.status(200).json({ expo_orders: result.rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// KDS: Subcategories for Footer Filters
+app.get('/api/kds/subcategories', verifyToken, async (req, res) => {
+  try {
+    const result = await pool.query(`SELECT DISTINCT subcategory FROM order_items ORDER BY subcategory ASC`);
+    res.status(200).json({ subcategories: result.rows.map(row => row.subcategory) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// KDS: Wait Threshold Settings (Update)
+app.put('/api/kds/settings/wait-thresholds', verifyToken, async (req, res) => {
+  const { green, yellow, red } = req.body;
+  try {
+    await pool.query(`UPDATE kds_settings SET green_threshold = $1, yellow_threshold = $2, red_threshold = $3`, [green, yellow, red]);
+    res.status(200).json({ message: 'Thresholds updated.' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// KDS: Status Counts Summary
+app.get('/api/kds/status-counts', verifyToken, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT status, COUNT(*) FROM orders GROUP BY status
+    `);
+    res.status(200).json({ status_summary: result.rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
