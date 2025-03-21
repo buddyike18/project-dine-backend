@@ -2959,3 +2959,97 @@ app.get('/api/kds/status-counts', verifyToken, async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+// Fetch checks by type: Open, Closed, Paid
+router.get('/api/checks/:type', verifyToken, async (req, res) => {
+  try {
+    const { type } = req.params;
+    const result = await pool.query(
+      'SELECT * FROM checks WHERE status = $1 ORDER BY updated_at DESC',
+      [type]
+    );
+    res.status(200).json({ checks: result.rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Filter/Search Checks
+router.get('/api/checks/search', verifyToken, async (req, res) => {
+  try {
+    const { query } = req.query;
+    const result = await pool.query(
+      `SELECT * FROM checks WHERE tab_name ILIKE $1 OR check_number::text ILIKE $1 ORDER BY updated_at DESC`,
+      [`%${query}%`]
+    );
+    res.status(200).json({ checks: result.rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Process cash payment
+router.post('/api/payments/cash', verifyToken, async (req, res) => {
+  try {
+    const { check_id, amount_tendered, total_due } = req.body;
+    const change_due = amount_tendered - total_due;
+    await pool.query('UPDATE checks SET status = $1 WHERE id = $2', ['Closed', check_id]);
+    res.status(200).json({ message: 'Cash payment complete', change_due });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Record tip on a closed check
+router.put('/api/payments/tip/:check_id', verifyToken, async (req, res) => {
+  try {
+    const { check_id } = req.params;
+    const { tip_amount } = req.body;
+    await pool.query('UPDATE checks SET tip = $1, status = $2 WHERE id = $3', [tip_amount, 'Paid', check_id]);
+    res.status(200).json({ message: 'Tip recorded and check paid' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Split Check
+router.post('/api/checks/:id/split', verifyToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { method, split_details } = req.body; // example: by_items or by_amount
+    const result = await pool.query(
+      'INSERT INTO check_splits (check_id, method, details) VALUES ($1, $2, $3) RETURNING *',
+      [id, method, JSON.stringify(split_details)]
+    );
+    res.status(201).json({ message: 'Check split successfully', split: result.rows[0] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Seat Assignment
+router.post('/api/seating/assign', verifyToken, async (req, res) => {
+  try {
+    const { order_id, seat_number } = req.body;
+    const result = await pool.query(
+      'UPDATE orders SET seat_number = $1 WHERE id = $2 RETURNING *',
+      [seat_number, order_id]
+    );
+    res.status(200).json({ message: 'Seat assigned', order: result.rows[0] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Order actions: Stay/Send
+router.post('/api/orders/:id/send', verifyToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { close_ui } = req.body;
+    await pool.query('UPDATE orders SET status = $1 WHERE id = $2', ['Sent', id]);
+    res.status(200).json({ message: close_ui ? 'Order sent & closed UI' : 'Order sent & stayed on screen' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
