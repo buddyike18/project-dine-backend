@@ -2961,7 +2961,7 @@ app.get('/api/kds/status-counts', verifyToken, async (req, res) => {
 });
 
 // Fetch checks by type: Open, Closed, Paid
-router.get('/api/checks/:type', verifyToken, async (req, res) => {
+app.get('/api/checks/:type', verifyToken, async (req, res) => {
   try {
     const { type } = req.params;
     const result = await pool.query(
@@ -2975,7 +2975,7 @@ router.get('/api/checks/:type', verifyToken, async (req, res) => {
 });
 
 // Filter/Search Checks
-router.get('/api/checks/search', verifyToken, async (req, res) => {
+app.get('/api/checks/search', verifyToken, async (req, res) => {
   try {
     const { query } = req.query;
     const result = await pool.query(
@@ -2989,7 +2989,7 @@ router.get('/api/checks/search', verifyToken, async (req, res) => {
 });
 
 // Process cash payment
-router.post('/api/payments/cash', verifyToken, async (req, res) => {
+app.post('/api/payments/cash', verifyToken, async (req, res) => {
   try {
     const { check_id, amount_tendered, total_due } = req.body;
     const change_due = amount_tendered - total_due;
@@ -3001,7 +3001,7 @@ router.post('/api/payments/cash', verifyToken, async (req, res) => {
 });
 
 // Record tip on a closed check
-router.put('/api/payments/tip/:check_id', verifyToken, async (req, res) => {
+app.put('/api/payments/tip/:check_id', verifyToken, async (req, res) => {
   try {
     const { check_id } = req.params;
     const { tip_amount } = req.body;
@@ -3013,7 +3013,7 @@ router.put('/api/payments/tip/:check_id', verifyToken, async (req, res) => {
 });
 
 // Split Check
-router.post('/api/checks/:id/split', verifyToken, async (req, res) => {
+app.post('/api/checks/:id/split', verifyToken, async (req, res) => {
   try {
     const { id } = req.params;
     const { method, split_details } = req.body; // example: by_items or by_amount
@@ -3028,7 +3028,7 @@ router.post('/api/checks/:id/split', verifyToken, async (req, res) => {
 });
 
 // Seat Assignment
-router.post('/api/seating/assign', verifyToken, async (req, res) => {
+app.post('/api/seating/assign', verifyToken, async (req, res) => {
   try {
     const { order_id, seat_number } = req.body;
     const result = await pool.query(
@@ -3042,7 +3042,7 @@ router.post('/api/seating/assign', verifyToken, async (req, res) => {
 });
 
 // Order actions: Stay/Send
-router.post('/api/orders/:id/send', verifyToken, async (req, res) => {
+app.post('/api/orders/:id/send', verifyToken, async (req, res) => {
   try {
     const { id } = req.params;
     const { close_ui } = req.body;
