@@ -1,28 +1,40 @@
+// server.js
 const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
 const bodyParser = require('body-parser');
 const admin = require('firebase-admin');
 const { Pool } = require('pg');
+const fs = require('fs');
+const path = require('path');
 
 // Load environment variables
 dotenv.config();
 
+// Check for Firebase credentials
+const firebaseKeyPath = path.join(__dirname, 'firebase-service-account.json');
+if (!fs.existsSync(firebaseKeyPath)) {
+  console.error('❌ Missing firebase-service-account.json');
+  process.exit(1);
+}
+
 // Initialize Firebase Admin SDK
-const serviceAccount = require('./firebase-service-account.json');
+const serviceAccount = require(firebaseKeyPath);
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
 });
 console.log('✅ Firebase Initialized Successfully');
 
-// Initialize Express App
+// Create Express App
 const app = express();
 app.use(cors());
 app.use(bodyParser.json());
+app.use(bodyParser.urlencoded({ extended: true }));
 
+// Define Server Port
 const PORT = process.env.PORT || 3000;
 
-// PostgreSQL Database Connection
+// Setup PostgreSQL Pool
 const pool = new Pool({
   user: process.env.PG_USER || 'postgres',
   host: process.env.PG_HOST || 'localhost',
@@ -33,35 +45,47 @@ const pool = new Pool({
 
 pool.connect()
   .then(() => console.log('✅ PostgreSQL Connected Successfully'))
-  .catch(err => console.error('❌ PostgreSQL Connection Error:', err));
+  .catch(err => {
+    console.error('❌ PostgreSQL Connection Error:', err);
+    process.exit(1);
+  });
 
-// Middleware to Verify Firebase Auth Token
+// Firebase Auth Middleware
 const verifyToken = async (req, res, next) => {
   try {
-    const token = req.headers.authorization?.split('Bearer ')[1];
+    const authHeader = req.headers.authorization || '';
+    const token = authHeader.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : null;
+    if (!token) return res.status(401).json({ error: 'Unauthorized - Token missing' });
 
-    if (!token) {
-      return res.status(401).json({ error: 'Unauthorized - No token provided' });
-    }
-
-    const decodedToken = await admin.auth().verifyIdToken(token);
-    req.user = decodedToken;
+    const decoded = await admin.auth().verifyIdToken(token);
+    req.user = decoded;
     next();
-  } catch (error) {
-    res.status(401).json({ error: 'Invalid token', details: error.message });
+  } catch (err) {
+    res.status(401).json({ error: 'Invalid token', details: err.message });
   }
 };
 
-// Mount Modular Routers
-const indexRouter = require('./routes/index');
-app.use('/api', indexRouter);
+// Attach pool and verifyToken globally
+app.set('pool', pool);
+app.set('verifyToken', verifyToken);
 
-// Start Server
+// Routes
+try {
+  const indexRouter = require('./routes/index');
+  if (!indexRouter || typeof indexRouter !== 'function' && typeof indexRouter.use !== 'function') {
+    throw new Error('Exported module is not a valid router');
+  }
+  app.use('/api', indexRouter);
+} catch (err) {
+  console.error('❌ Cannot load ./routes/index.js - ensure file exists and is error-free.');
+  console.error(err.message);
+  process.exit(1);
+}
+
+// Start Express Server
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on http://localhost:${PORT}`);
+  console.log(`🚀 Server listening on http://localhost:${PORT}`);
 });
-
-module.exports = { app, pool, verifyToken };
 
 // Create a Reservation
 router.post('/', verifyToken, async (req, res) => {
