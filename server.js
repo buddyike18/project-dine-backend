@@ -72,7 +72,7 @@ app.set('verifyToken', verifyToken);
 // Routes
 try {
   const indexRouter = require('./routes/index');
-  if (!indexRouter || typeof indexRouter !== 'function' && typeof indexRouter.use !== 'function') {
+  if (!indexRouter || (typeof indexRouter !== 'function' && typeof indexRouter.use !== 'function')) {
     throw new Error('Exported module is not a valid router');
   }
   app.use('/api', indexRouter);
