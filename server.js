@@ -1957,11 +1957,12 @@ router.get('/reservations/party-sizes', verifyToken, async (req, res) => {
 });
 
 // Create a New Reservation
-app.post('/api/reservations/new', verifyToken, async (req, res) => {
+router.post('/reservations/new', verifyToken, async (req, res) => {
   try {
     const { user_id, restaurant_id, party_size, reservation_time, server_id } = req.body;
     const result = await pool.query(
-      "INSERT INTO reservations (user_id, restaurant_id, party_size, reservation_time, status, server_id) VALUES ($1, $2, $3, $4, 'Upcoming', $5) RETURNING *",
+      `INSERT INTO reservations (user_id, restaurant_id, party_size, reservation_time, status, server_id)
+       VALUES ($1, $2, $3, $4, 'Upcoming', $5) RETURNING *`,
       [user_id, restaurant_id, party_size, reservation_time, server_id]
     );
     res.status(201).json({ message: 'Reservation created successfully', reservation: result.rows[0] });
@@ -1971,7 +1972,7 @@ app.post('/api/reservations/new', verifyToken, async (req, res) => {
 });
 
 // Fetch Available Time Slots for Selected Date and Party Size
-app.get('/api/reservations/slots/:date/:party_size', verifyToken, async (req, res) => {
+router.get('/reservations/slots/:date/:party_size', verifyToken, async (req, res) => {
   try {
     const { date, party_size } = req.params;
     const result = await pool.query(
@@ -1990,7 +1991,7 @@ app.get('/api/reservations/slots/:date/:party_size', verifyToken, async (req, re
 });
 
 // Fetch Available Dining Options for Selected Time Slot
-app.get('/api/reservations/dining-options/:date/:time/:party_size', verifyToken, async (req, res) => {
+router.get('/reservations/dining-options/:date/:time/:party_size', verifyToken, async (req, res) => {
   try {
     const { date, time, party_size } = req.params;
     const result = await pool.query(
@@ -2011,7 +2012,7 @@ app.get('/api/reservations/dining-options/:date/:time/:party_size', verifyToken,
 });
 
 // Search for Existing Guest by Name, Phone, or Email
-app.get('/api/guests/search', verifyToken, async (req, res) => {
+router.get('/guests/search', verifyToken, async (req, res) => {
   try {
     const { query } = req.query;
     const result = await pool.query(
@@ -2027,7 +2028,7 @@ app.get('/api/guests/search', verifyToken, async (req, res) => {
 });
 
 // Add a New Guest if Not Found
-app.post('/api/guests/new', verifyToken, async (req, res) => {
+router.post('/guests/new', verifyToken, async (req, res) => {
   try {
     const { name, phone, email } = req.body;
     const result = await pool.query(
@@ -2041,7 +2042,7 @@ app.post('/api/guests/new', verifyToken, async (req, res) => {
 });
 
 // Fetch Reservation Summary Before Completion
-app.get('/api/reservations/summary/:reservation_id', verifyToken, async (req, res) => {
+router.get('/reservations/summary/:reservation_id', verifyToken, async (req, res) => {
   try {
     const { reservation_id } = req.params;
     const result = await pool.query(
