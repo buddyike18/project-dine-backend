@@ -3,6 +3,20 @@ const express = require('express');
 const router = express.Router();
 const pool = require('./db');
 
+const handleError = (res, err) => res.status(500).json({ error: err.message });
+const allowedStatus = ['Pending', 'Preparing', 'Ready', 'Served', 'Completed'];
+const allowedPriority = ['Low', 'Medium', 'High', 'Urgent'];
+
+// validation middleware factory
+const validate = (checks) => (req, res, next) => {
+  for (const [field, check] of Object.entries(checks)) {
+    if (!check(req.body[field])) {
+      return res.status(400).json({ error: `Invalid or missing '${field}'` });
+    }
+  }
+  next();
+};
+
 module.exports = (verifyToken) => {
   // Get all orders for user with items
   router.get('/', verifyToken, async (req, res) => {
