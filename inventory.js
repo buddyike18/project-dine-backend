@@ -128,5 +128,27 @@ module.exports = (pool, verifyToken) => {
     }
   });
 
+  // Bulk update inventory quantities
+  router.post('/bulk-update', verifyToken, async (req, res) => {
+    const { items } = req.body;
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      for (const item of items) {
+        await client.query(
+          'UPDATE inventory SET quantity = $1 WHERE id = $2',
+          [item.quantity, item.id]
+        );
+      }
+      await client.query('COMMIT');
+      res.status(200).json({ message: 'Bulk update successful' });
+    } catch (err) {
+      await client.query('ROLLBACK');
+      res.status(500).json({ error: err.message });
+    } finally {
+      client.release();
+    }
+  });
+
   return router;
 };

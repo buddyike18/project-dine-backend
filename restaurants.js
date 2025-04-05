@@ -114,5 +114,50 @@ module.exports = (pool, verifyToken) => {
     }
   });
 
+  // Toggle open/closed status
+  router.patch('/:id/status', verifyToken, async (req, res) => {
+    const { is_open } = req.body;
+    try {
+      const result = await pool.query(
+        'UPDATE restaurants SET is_open = $1 WHERE id = $2 RETURNING *',
+        [is_open, req.params.id]
+      );
+      res.json({ restaurant: result.rows[0] });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Search restaurants by name
+  router.get('/search/by-name', async (req, res) => {
+    const { q } = req.query;
+    try {
+      const result = await pool.query(
+        'SELECT * FROM restaurants WHERE name ILIKE $1 ORDER BY name ASC',
+        [`%${q}%`]
+      );
+      res.json({ restaurants: result.rows });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Location-based nearby search (simple lat/lng radius)
+  router.get('/nearby', async (req, res) => {
+    const { lat, lng, radius_km } = req.query;
+    try {
+      const result = await pool.query(
+        `SELECT *, ( 6371 * acos( cos( radians($1) ) * cos( radians(latitude) ) * cos( radians(longitude) - radians($2) ) + sin( radians($1) ) * sin( radians(latitude) ) ) ) AS distance_km
+         FROM restaurants
+         HAVING ( 6371 * acos( cos( radians($1) ) * cos( radians(latitude) ) * cos( radians(longitude) - radians($2) ) + sin( radians($1) ) * sin( radians(latitude) ) ) ) < $3
+         ORDER BY distance_km ASC`,
+        [lat, lng, radius_km]
+      );
+      res.json({ nearby: result.rows });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   return router;
 };

@@ -43,5 +43,32 @@ module.exports = (pool, verifyToken, admin) => {
     }
   });
 
+  // Get only unread notifications
+  router.get('/unread', verifyToken, async (req, res) => {
+    try {
+      const result = await pool.query(
+        'SELECT * FROM notifications WHERE user_id = $1 AND read = false ORDER BY created_at DESC',
+        [req.user.uid]
+      );
+      res.json({ unread: result.rows });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Mark a notification as read
+  router.patch('/:id/read', verifyToken, async (req, res) => {
+    const { id } = req.params;
+    try {
+      const result = await pool.query(
+        'UPDATE notifications SET read = true WHERE id = $1 AND user_id = $2 RETURNING *',
+        [id, req.user.uid]
+      );
+      res.json({ updated: result.rows[0] });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   return router;
 };

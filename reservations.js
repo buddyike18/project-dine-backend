@@ -2,7 +2,8 @@ const express = require('express');
 const router = express.Router();
 
 module.exports = (pool, verifyToken) => {
-  // Get all reservations
+  // Existing endpoints...
+
   router.get('/', verifyToken, async (req, res) => {
     try {
       const result = await pool.query('SELECT * FROM reservations ORDER BY reservation_time ASC');
@@ -12,7 +13,6 @@ module.exports = (pool, verifyToken) => {
     }
   });
 
-  // Create a reservation
   router.post('/', verifyToken, async (req, res) => {
     const { user_id, restaurant_id, reservation_time, num_guests, table_id, notes } = req.body;
     try {
@@ -27,7 +27,6 @@ module.exports = (pool, verifyToken) => {
     }
   });
 
-  // Cancel a reservation
   router.delete('/:id', verifyToken, async (req, res) => {
     try {
       await pool.query('DELETE FROM reservations WHERE id = $1', [req.params.id]);
@@ -37,7 +36,6 @@ module.exports = (pool, verifyToken) => {
     }
   });
 
-  // Assign table to reservation
   router.put('/:id/assign-table', verifyToken, async (req, res) => {
     const { table_id } = req.body;
     try {
@@ -51,19 +49,15 @@ module.exports = (pool, verifyToken) => {
     }
   });
 
-  // Get current waitlist
   router.get('/waitlist', verifyToken, async (req, res) => {
     try {
-      const result = await pool.query(
-        'SELECT * FROM waitlist ORDER BY created_at ASC'
-      );
+      const result = await pool.query('SELECT * FROM waitlist ORDER BY created_at ASC');
       res.json({ waitlist: result.rows });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
   });
 
-  // Add to waitlist
   router.post('/waitlist', verifyToken, async (req, res) => {
     const { user_id, restaurant_id, num_guests, notes } = req.body;
     try {
@@ -78,7 +72,6 @@ module.exports = (pool, verifyToken) => {
     }
   });
 
-  // Remove from waitlist
   router.delete('/waitlist/:id', verifyToken, async (req, res) => {
     try {
       await pool.query('DELETE FROM waitlist WHERE id = $1', [req.params.id]);
@@ -88,7 +81,6 @@ module.exports = (pool, verifyToken) => {
     }
   });
 
-  // Get available tables
   router.get('/tables/available', verifyToken, async (req, res) => {
     try {
       const result = await pool.query(`
@@ -104,7 +96,6 @@ module.exports = (pool, verifyToken) => {
     }
   });
 
-  // Add a new table
   router.post('/tables', verifyToken, async (req, res) => {
     const { restaurant_id, table_number, capacity } = req.body;
     try {
@@ -118,11 +109,38 @@ module.exports = (pool, verifyToken) => {
     }
   });
 
-  // Delete table
   router.delete('/tables/:id', verifyToken, async (req, res) => {
     try {
       await pool.query('DELETE FROM tables WHERE id = $1', [req.params.id]);
       res.json({ message: 'Table deleted' });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // NEW: Get reservations by date
+  router.get('/date/:date', verifyToken, async (req, res) => {
+    const { date } = req.params;
+    try {
+      const result = await pool.query(
+        'SELECT * FROM reservations WHERE DATE(reservation_time) = $1 ORDER BY reservation_time ASC',
+        [date]
+      );
+      res.json({ reservations: result.rows });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // NEW: Get reservations by user
+  router.get('/user/:user_id', verifyToken, async (req, res) => {
+    const { user_id } = req.params;
+    try {
+      const result = await pool.query(
+        'SELECT * FROM reservations WHERE user_id = $1 ORDER BY reservation_time DESC',
+        [user_id]
+      );
+      res.json({ reservations: result.rows });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }

@@ -100,5 +100,29 @@ module.exports = (pool, verifyToken) => {
     }
   });
 
+  // Custom report by date range
+  router.post('/sales/custom', verifyToken, async (req, res) => {
+    const { start_date, end_date } = req.body;
+    try {
+      const result = await pool.query(
+        'SELECT DATE(created_at) AS date, COUNT(*) AS orders_count, SUM(total_price) AS total_sales FROM orders WHERE created_at BETWEEN $1 AND $2 GROUP BY DATE(created_at) ORDER BY date DESC',
+        [start_date, end_date]
+      );
+      res.json({ custom_sales: result.rows });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Average order value
+  router.get('/orders/average-value', verifyToken, async (req, res) => {
+    try {
+      const result = await pool.query('SELECT AVG(total_price) AS avg_order_value FROM orders');
+      res.json({ avg_order_value: result.rows[0].avg_order_value });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   return router;
 };

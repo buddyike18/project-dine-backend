@@ -84,5 +84,35 @@ module.exports = (pool, verifyToken) => {
     }
   });
 
+  // Toggle menu item availability
+  router.patch('/:id/availability', verifyToken, async (req, res) => {
+    const { id } = req.params;
+    const { available } = req.body;
+    try {
+      const result = await pool.query(
+        'UPDATE menu SET available = $1 WHERE id = $2 RETURNING *',
+        [available, id]
+      );
+      res.status(200).json({ menu_item: result.rows[0] });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Search menu items by keyword
+  router.get('/:restaurant_id/search', async (req, res) => {
+    const { restaurant_id } = req.params;
+    const { q } = req.query;
+    try {
+      const result = await pool.query(
+        'SELECT * FROM menu WHERE restaurant_id = $1 AND (name ILIKE $2 OR description ILIKE $2)',
+        [restaurant_id, `%${q}%`]
+      );
+      res.json({ results: result.rows });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   return router;
 };

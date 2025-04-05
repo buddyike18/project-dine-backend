@@ -2,6 +2,8 @@ const express = require('express');
 const router = express.Router();
 
 module.exports = (pool, verifyToken) => {
+  // Existing endpoints...
+
   // Get all orders for user
   router.get('/', verifyToken, async (req, res) => {
     try {
@@ -155,6 +157,33 @@ module.exports = (pool, verifyToken) => {
         [req.user.uid, order_id, rating, comment]
       );
       res.status(201).json({ review: result.rows[0] });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Filter by status
+  router.get('/status/:status', verifyToken, async (req, res) => {
+    const { status } = req.params;
+    try {
+      const result = await pool.query(
+        'SELECT * FROM orders WHERE user_id = $1 AND status = $2 ORDER BY created_at DESC',
+        [req.user.uid, status]
+      );
+      res.json({ filtered: result.rows });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // View order history
+  router.get('/history', verifyToken, async (req, res) => {
+    try {
+      const result = await pool.query(
+        'SELECT * FROM orders WHERE user_id = $1 ORDER BY created_at DESC',
+        [req.user.uid]
+      );
+      res.json({ history: result.rows });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }

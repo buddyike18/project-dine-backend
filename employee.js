@@ -140,5 +140,33 @@ module.exports = (pool, verifyToken) => {
     }
   });
 
+  // Filter employees by search
+  router.get('/search/query', verifyToken, async (req, res) => {
+    const { q } = req.query;
+    try {
+      const result = await pool.query(
+        `SELECT * FROM employees WHERE name ILIKE $1 OR role ILIKE $1`,
+        [`%${q}%`]
+      );
+      res.json({ employees: result.rows });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Toggle active status
+  router.patch('/:id/status', verifyToken, async (req, res) => {
+    const { status } = req.body;
+    try {
+      const result = await pool.query(
+        'UPDATE employees SET status = $1 WHERE id = $2 RETURNING *',
+        [status, req.params.id]
+      );
+      res.json({ employee: result.rows[0] });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   return router;
 };
