@@ -37,12 +37,16 @@ module.exports = (verifyToken) => {
 
       res.json({ orders: result.rows });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      handleError(res, err);
     }
   });
 
   // Place new order with items and payment
-  router.post('/', verifyToken, async (req, res) => {
+  router.post('/', validate({
+    restaurant_id: Number.isInteger,
+    items: Array.isArray,
+    total_price: (v) => typeof v === 'number' && v >= 0,
+  }), verifyToken, async (req, res) => {
     const client = await pool.connect();
     const { restaurant_id, items, total_price, payment } = req.body;
     try {
@@ -72,7 +76,7 @@ module.exports = (verifyToken) => {
       res.status(201).json({ order });
     } catch (err) {
       await client.query('ROLLBACK');
-      res.status(500).json({ error: err.message });
+      handleError(res, err);
     } finally {
       client.release();
     }
@@ -118,26 +122,24 @@ module.exports = (verifyToken) => {
   });
 
   // Submit review for an order
-router.post('/:id/review', verifyToken, async (req, res) => {
-  const { rating, comment } = req.body;
-  const orderId = req.params.id;
+  router.post('/:id/review', validate({
+    rating: (v) => Number.isInteger(v) && v >= 1 && v <= 5,
+    comment: (v) => typeof v === 'string',
+  }), verifyToken, async (req, res) => {
+    const { rating, comment } = req.body;
+    const orderId = req.params.id;
 
-  if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
-    return res.status(400).json({ error: 'Rating must be an integer between 1 and 5' });
-  }
+    try {
+      const result = await pool.query(
+        `INSERT INTO reviews (user_id, order_id, rating, comment, created_at) VALUES ($1, $2, $3, $4, NOW()) RETURNING *`,
+        [req.user.uid, orderId, rating, comment]
+      );
 
-  try {
-    const result = await pool.query(
-      `INSERT INTO reviews (user_id, order_id, rating, comment, created_at)
-       VALUES ($1, $2, $3, $4, NOW()) RETURNING *`,
-      [req.user.uid, orderId, rating, comment]
-    );
-
-    res.status(201).json({ review: result.rows[0] });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+      res.status(201).json({ review: result.rows[0] });
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
 
 // View order history for the logged-in user
 router.get('/history', verifyToken, async (req, res) => {
@@ -164,20 +166,15 @@ router.get('/history', verifyToken, async (req, res) => {
 });
 
 // Assign order to a chef
-router.put('/:id/assign', verifyToken, async (req, res) => {
+router.put('/:id/assign', validate({
+  chef_id: Number.isInteger,
+}), verifyToken, async (req, res) => {
   const { chef_id } = req.body;
   const { id } = req.params;
 
-  if (!chef_id || isNaN(chef_id)) {
-    return res.status(400).json({ error: 'Invalid chef_id' });
-  }
-
   try {
     const result = await pool.query(
-      `UPDATE orders 
-       SET assigned_chef_id = $1, updated_at = NOW() 
-       WHERE id = $2 AND user_id = $3 
-       RETURNING *`,
+      `UPDATE orders SET assigned_chef_id = $1, updated_at = NOW() WHERE id = $2 AND user_id = $3 RETURNING *`,
       [chef_id, id, req.user.uid]
     );
 
@@ -187,7 +184,7 @@ router.put('/:id/assign', verifyToken, async (req, res) => {
 
     res.json({ order: result.rows[0] });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    handleError(res, err);
   }
 });
 
@@ -269,21 +266,15 @@ router.get('/kds/completed', verifyToken, async (req, res) => {
 });
 
 // Update the priority level of an order
-router.put('/:id/priority', verifyToken, async (req, res) => {
+router.put('/:id/priority', validate({
+  priority_level: (v) => allowedPriority.includes(v),
+}), verifyToken, async (req, res) => {
   const { priority_level } = req.body;
   const { id } = req.params;
-  const allowed = ['Low', 'Medium', 'High', 'Urgent'];
-
-  if (!allowed.includes(priority_level)) {
-    return res.status(400).json({ error: 'Invalid priority level' });
-  }
 
   try {
     const result = await pool.query(
-      `UPDATE orders 
-       SET priority_level = $1, updated_at = NOW()
-       WHERE id = $2 AND user_id = $3 
-       RETURNING *`,
+      `UPDATE orders SET priority_level = $1, updated_at = NOW() WHERE id = $2 AND user_id = $3 RETURNING *`,
       [priority_level, id, req.user.uid]
     );
 
@@ -293,12 +284,15 @@ router.put('/:id/priority', verifyToken, async (req, res) => {
 
     res.json({ order: result.rows[0] });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    handleError(res, err);
   }
 });
 
 // Update order items and total price
-router.put('/:id', verifyToken, async (req, res) => {
+router.put('/:id', validate({
+  items: Array.isArray,
+  total_price: (v) => typeof v === 'number' && v >= 0,
+}), verifyToken, async (req, res) => {
   const { id } = req.params;
   const { items, total_price } = req.body;
   const client = await pool.connect();
@@ -306,10 +300,7 @@ router.put('/:id', verifyToken, async (req, res) => {
   try {
     await client.query('BEGIN');
 
-    const check = await client.query(
-      'SELECT * FROM orders WHERE id = $1 AND user_id = $2',
-      [id, req.user.uid]
-    );
+    const check = await client.query('SELECT * FROM orders WHERE id = $1 AND user_id = $2', [id, req.user.uid]);
     if (check.rowCount === 0) {
       await client.query('ROLLBACK');
       return res.status(404).json({ error: 'Order not found or unauthorized' });
@@ -333,7 +324,7 @@ router.put('/:id', verifyToken, async (req, res) => {
     res.json({ order: update.rows[0] });
   } catch (err) {
     await client.query('ROLLBACK');
-    res.status(500).json({ error: err.message });
+    handleError(res, err);
   } finally {
     client.release();
   }
