@@ -8,8 +8,8 @@ const allowedStatus = ['Pending', 'Preparing', 'Ready', 'Served', 'Completed'];
 const allowedPriority = ['Low', 'Medium', 'High', 'Urgent'];
 
 // validation middleware factory
-const validate = (checks) => (req, res, next) => {
-  for (const [field, check] of Object.entries(checks)) {
+const validate = (rules) => (req, res, next) => {
+  for (const [field, check] of Object.entries(rules)) {
     if (!check(req.body[field])) {
       return res.status(400).json({ error: `Invalid or missing '${field}'` });
     }
