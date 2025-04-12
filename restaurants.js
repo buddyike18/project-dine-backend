@@ -1,20 +1,25 @@
 const express = require('express');
 const router = express.Router();
 
+const handleError = (res, err) => res.status(500).json({ error: err.message });
+
 module.exports = (pool, verifyToken) => {
-  // Get all restaurants
+  // [GET] /restaurants - Get all restaurants
   router.get('/', async (req, res) => {
     try {
       const result = await pool.query('SELECT * FROM restaurants ORDER BY name ASC');
       res.json({ restaurants: result.rows });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      handleError(res, err);
     }
   });
 
-  // Create new restaurant
+  // [POST] /restaurants - Create new restaurant
   router.post('/', verifyToken, async (req, res) => {
     const { name, address, phone, description } = req.body;
+    if (!name || !address || !phone) {
+      return res.status(400).json({ error: 'Missing required restaurant fields' });
+    }
     try {
       const result = await pool.query(
         'INSERT INTO restaurants (name, address, phone, description) VALUES ($1, $2, $3, $4) RETURNING *',
@@ -22,11 +27,11 @@ module.exports = (pool, verifyToken) => {
       );
       res.status(201).json({ restaurant: result.rows[0] });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      handleError(res, err);
     }
   });
 
-  // Update restaurant
+  // [PUT] /restaurants/:id - Update restaurant
   router.put('/:id', verifyToken, async (req, res) => {
     const { name, address, phone, description } = req.body;
     try {
@@ -34,25 +39,28 @@ module.exports = (pool, verifyToken) => {
         'UPDATE restaurants SET name = $1, address = $2, phone = $3, description = $4 WHERE id = $5 RETURNING *',
         [name, address, phone, description, req.params.id]
       );
+      if (result.rowCount === 0) return res.status(404).json({ error: 'Restaurant not found' });
       res.json({ restaurant: result.rows[0] });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      handleError(res, err);
     }
   });
 
-  // Delete restaurant
+  // [DELETE] /restaurants/:id - Delete restaurant
   router.delete('/:id', verifyToken, async (req, res) => {
     try {
-      await pool.query('DELETE FROM restaurants WHERE id = $1', [req.params.id]);
+      const result = await pool.query('DELETE FROM restaurants WHERE id = $1 RETURNING *', [req.params.id]);
+      if (result.rowCount === 0) return res.status(404).json({ error: 'Restaurant not found' });
       res.json({ message: 'Restaurant deleted' });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      handleError(res, err);
     }
   });
 
-  // Add menu category
+  // [POST] /restaurants/:id/categories - Add menu category
   router.post('/:id/categories', verifyToken, async (req, res) => {
     const { name } = req.body;
+    if (!name) return res.status(400).json({ error: 'Category name is required' });
     try {
       const result = await pool.query(
         'INSERT INTO menu_categories (restaurant_id, name) VALUES ($1, $2) RETURNING *',
@@ -60,11 +68,11 @@ module.exports = (pool, verifyToken) => {
       );
       res.status(201).json({ category: result.rows[0] });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      handleError(res, err);
     }
   });
 
-  // Get categories for restaurant
+  // [GET] /restaurants/:id/categories - Get categories
   router.get('/:id/categories', verifyToken, async (req, res) => {
     try {
       const result = await pool.query(
@@ -73,13 +81,14 @@ module.exports = (pool, verifyToken) => {
       );
       res.json({ categories: result.rows });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      handleError(res, err);
     }
   });
 
-  // Add modifiers for a menu item
+  // [POST] /restaurants/menu/:menu_id/modifiers - Add modifier
   router.post('/menu/:menu_id/modifiers', verifyToken, async (req, res) => {
     const { name, price } = req.body;
+    if (!name || price == null) return res.status(400).json({ error: 'Modifier name and price required' });
     try {
       const result = await pool.query(
         'INSERT INTO menu_modifiers (menu_id, name, price) VALUES ($1, $2, $3) RETURNING *',
@@ -87,11 +96,11 @@ module.exports = (pool, verifyToken) => {
       );
       res.status(201).json({ modifier: result.rows[0] });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      handleError(res, err);
     }
   });
 
-  // Get modifiers for menu item
+  // [GET] /restaurants/menu/:menu_id/modifiers - Get modifiers
   router.get('/menu/:menu_id/modifiers', async (req, res) => {
     try {
       const result = await pool.query(
@@ -100,35 +109,38 @@ module.exports = (pool, verifyToken) => {
       );
       res.json({ modifiers: result.rows });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      handleError(res, err);
     }
   });
 
-  // Delete modifier
+  // [DELETE] /restaurants/modifiers/:id - Delete modifier
   router.delete('/modifiers/:id', verifyToken, async (req, res) => {
     try {
-      await pool.query('DELETE FROM menu_modifiers WHERE id = $1', [req.params.id]);
+      const result = await pool.query('DELETE FROM menu_modifiers WHERE id = $1 RETURNING *', [req.params.id]);
+      if (result.rowCount === 0) return res.status(404).json({ error: 'Modifier not found' });
       res.json({ message: 'Modifier deleted' });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      handleError(res, err);
     }
   });
 
-  // Toggle open/closed status
+  // [PATCH] /restaurants/:id/status - Toggle open/closed
   router.patch('/:id/status', verifyToken, async (req, res) => {
     const { is_open } = req.body;
+    if (typeof is_open !== 'boolean') return res.status(400).json({ error: 'is_open must be boolean' });
     try {
       const result = await pool.query(
         'UPDATE restaurants SET is_open = $1 WHERE id = $2 RETURNING *',
         [is_open, req.params.id]
       );
+      if (result.rowCount === 0) return res.status(404).json({ error: 'Restaurant not found' });
       res.json({ restaurant: result.rows[0] });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      handleError(res, err);
     }
   });
 
-  // Search restaurants by name
+  // [GET] /restaurants/search/by-name?q= - Search by name
   router.get('/search/by-name', async (req, res) => {
     const { q } = req.query;
     try {
@@ -138,13 +150,14 @@ module.exports = (pool, verifyToken) => {
       );
       res.json({ restaurants: result.rows });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      handleError(res, err);
     }
   });
 
-  // Location-based nearby search (simple lat/lng radius)
+  // [GET] /restaurants/nearby?lat=&lng=&radius_km= - Nearby restaurants
   router.get('/nearby', async (req, res) => {
     const { lat, lng, radius_km } = req.query;
+    if (!lat || !lng || !radius_km) return res.status(400).json({ error: 'Missing lat/lng/radius_km query params' });
     try {
       const result = await pool.query(
         `SELECT *, ( 6371 * acos( cos( radians($1) ) * cos( radians(latitude) ) * cos( radians(longitude) - radians($2) ) + sin( radians($1) ) * sin( radians(latitude) ) ) ) AS distance_km
@@ -155,7 +168,7 @@ module.exports = (pool, verifyToken) => {
       );
       res.json({ nearby: result.rows });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      handleError(res, err);
     }
   });
 

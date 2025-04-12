@@ -1,8 +1,10 @@
 const express = require('express');
 const router = express.Router();
 
+const handleError = (res, err) => res.status(500).json({ error: err.message });
+
 module.exports = (pool, verifyToken, admin) => {
-  // Fetch notifications for current user
+  // [GET] /notifications - Fetch notifications for current user
   router.get('/', verifyToken, async (req, res) => {
     try {
       const result = await pool.query(
@@ -11,13 +13,29 @@ module.exports = (pool, verifyToken, admin) => {
       );
       res.json({ notifications: result.rows });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      handleError(res, err);
     }
   });
 
-  // Send push notification to a user
+  // [GET] /notifications/unread - Get only unread notifications
+  router.get('/unread', verifyToken, async (req, res) => {
+    try {
+      const result = await pool.query(
+        'SELECT * FROM notifications WHERE user_id = $1 AND read = false ORDER BY created_at DESC',
+        [req.user.uid]
+      );
+      res.json({ unread: result.rows });
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
+
+  // [POST] /notifications/push - Send push notification to a user
   router.post('/push', verifyToken, async (req, res) => {
     const { user_id, title, message } = req.body;
+    if (!user_id || !title || !message) {
+      return res.status(400).json({ error: 'user_id, title, and message are required' });
+    }
     try {
       const result = await pool.query(
         'SELECT device_token FROM users WHERE id = $1',
@@ -39,24 +57,11 @@ module.exports = (pool, verifyToken, admin) => {
 
       res.json({ message: 'Push notification sent successfully' });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      handleError(res, err);
     }
   });
 
-  // Get only unread notifications
-  router.get('/unread', verifyToken, async (req, res) => {
-    try {
-      const result = await pool.query(
-        'SELECT * FROM notifications WHERE user_id = $1 AND read = false ORDER BY created_at DESC',
-        [req.user.uid]
-      );
-      res.json({ unread: result.rows });
-    } catch (err) {
-      res.status(500).json({ error: err.message });
-    }
-  });
-
-  // Mark a notification as read
+  // [PATCH] /notifications/:id/read - Mark a notification as read
   router.patch('/:id/read', verifyToken, async (req, res) => {
     const { id } = req.params;
     try {
@@ -64,9 +69,12 @@ module.exports = (pool, verifyToken, admin) => {
         'UPDATE notifications SET read = true WHERE id = $1 AND user_id = $2 RETURNING *',
         [id, req.user.uid]
       );
+      if (result.rowCount === 0) {
+        return res.status(404).json({ error: 'Notification not found or unauthorized' });
+      }
       res.json({ updated: result.rows[0] });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      handleError(res, err);
     }
   });
 
