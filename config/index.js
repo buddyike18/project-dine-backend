@@ -365,12 +365,6 @@ function buildConfig() {
     'FIREBASE_SERVICE_ACCOUNT_PATH'
   );
   const stripeSecretKey = required('STRIPE_SECRET_KEY');
-  console.log({
-    stripeKeyExists: Boolean(stripeSecretKey),
-    stripeKeyPrefix: stripeSecretKey.slice(0, 8),
-    stripeKeyLength: stripeSecretKey.length,
-  });
-
   const stripeWebhookSecret = required('STRIPE_WEBHOOK_SECRET');
   const adminRoleSecret = required('ADMIN_ROLE_SECRET');
   const corsOrigins = parseCorsOrigins(required('CORS_ORIGINS'), appEnv);
