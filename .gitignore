@@ -1,5 +1,26 @@
-
-# safety
+# Dependencies
 node_modules/
-/dine-customer
-/dine-customer-OLD
+
+# Environment
+.env
+.env.*
+
+# Firebase Admin credentials
+firebase-service-account.json
+*firebase-service-account*.json
+service-account*.json
+
+# Backup files
+*.bak
+
+# Logs
+*.log
+logs/
+
+# Coverage
+coverage/
+
+# Temporary / editor files
+.DS_Store
+*.tmp
+*.swp
