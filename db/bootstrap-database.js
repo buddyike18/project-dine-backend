@@ -226,6 +226,10 @@ async function run() {
     await client.query('BEGIN');
     transactionStarted = true;
 
+    await client.query(`
+      DROP TABLE IF EXISTS public.schema_migrations CASCADE;
+    `);
+
     await client.query(schemaSql);
 
     const ledgerExists = await client.query(`
@@ -295,6 +299,11 @@ async function run() {
         /^[A-Z0-9_]+$/.test(err.message)
           ? err.message
           : 'BOOTSTRAP_RUN_FAILED',
+      pgCode: err?.code ?? null,
+      detail:
+        process.env.NODE_ENV === 'development'
+          ? err?.message ?? null
+          : null,
     });
 
     process.exitCode = 1;
