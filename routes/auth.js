@@ -405,25 +405,37 @@ const authRouter = function authRouter(
     }
   };
 
-    // [POST] /auth/user-profile - Provision a new customer or update an active existing profile
+    // [POST] /auth/user-profile - Provision or update a restaurant-scoped Customer
     router.post(
       '/user-profile',
       verifyToken,
       async (req, res) => {
-        const { name, phone } = req.body;
-        const firebaseUid = req.user?.uid;
-        const firebaseEmail = req.user?.email || null;
+        const firebaseUid = req.user?.uid || null;
 
-        if (!firebaseUid || !firebaseEmail) {
+        const restaurantId =
+          typeof req.body?.restaurant_id === 'string'
+            ? req.body.restaurant_id.trim()
+            : '';
+
+        const requestedName =
+          typeof req.body?.name === 'string'
+            ? req.body.name.trim()
+            : '';
+
+        const customerName = requestedName || 'Customer';
+
+        if (!firebaseUid) {
           return res.status(401).json({
-            error:
-              'Authenticated Firebase identity is required',
+            error: 'Authenticated Firebase identity is required',
           });
         }
 
-        if (!name) {
+        const uuidPattern =
+          /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+        if (!restaurantId || !uuidPattern.test(restaurantId)) {
           return res.status(400).json({
-            error: 'Name is required',
+            error: 'restaurant_id must be a valid UUID',
           });
         }
 
@@ -442,8 +454,31 @@ const authRouter = function authRouter(
         try {
           await client.query('BEGIN');
 
+          const restaurantResult = await client.query(
+            `SELECT id
+             FROM restaurants
+             WHERE id = $1
+               AND active = true
+             LIMIT 1`,
+            [restaurantId]
+          );
+
+          if (restaurantResult.rowCount !== 1) {
+            await client.query('ROLLBACK');
+
+            return res.status(404).json({
+              error: 'Restaurant not found',
+            });
+          }
+
           const existingResult = await client.query(
-            `SELECT id, active
+            `SELECT
+               id,
+               firebase_uid,
+               restaurant_id,
+               role,
+               name,
+               active
              FROM users
              WHERE firebase_uid = $1
              FOR UPDATE`,
@@ -457,36 +492,31 @@ const authRouter = function authRouter(
               `INSERT INTO users (
                  id,
                  firebase_uid,
-                 name,
-                 email,
-                 phone,
+                 restaurant_id,
                  role,
-                 restaurant_id
+                 name,
+                 active
                )
                VALUES (
                  $1,
                  $2,
                  $3,
-                 $4,
-                 $5,
                  'Customer',
-                 NULL
+                 $4,
+                 true
                )
                RETURNING
                  id,
                  firebase_uid,
-                 name,
-                 email,
-                 phone,
-                 role,
                  restaurant_id,
+                 role,
+                 name,
                  active`,
               [
                 crypto.randomUUID(),
                 firebaseUid,
-                name,
-                firebaseEmail,
-                phone || null,
+                restaurantId,
+                customerName,
               ]
             );
           } else {
@@ -496,57 +526,49 @@ const authRouter = function authRouter(
               );
             }
 
-            if (existingResult.rows[0].active !== true) {
-              try {
-                await client.query('ROLLBACK');
-              } catch {
-                req.logEvent?.(
-                  'error',
-                  'auth_route_failed',
-                  {
-                    reason:
-                      'AUTH_PROFILE_ROLLBACK_FAILED',
-                  }
-                );
+            const existingUser = existingResult.rows[0];
 
-                return handleError(
-                  req,
-                  res,
-                  'AUTH_PROFILE_TRANSACTION_FAILED'
-                );
-              }
+            if (existingUser.active !== true) {
+              await client.query('ROLLBACK');
 
               return res.status(403).json({
                 error: 'User account is inactive',
               });
             }
 
+            if (existingUser.role !== 'Customer') {
+              await client.query('ROLLBACK');
+
+              return res.status(403).json({
+                error: 'Forbidden',
+              });
+            }
+
             result = await client.query(
               `UPDATE users
-               SET name = $1,
-                   email = $2,
-                   phone = $3
-               WHERE firebase_uid = $4
+               SET
+                 name = $2,
+                 restaurant_id = $3
+               WHERE firebase_uid = $1
+                 AND role = 'Customer'
+                 AND active = true
                RETURNING
                  id,
                  firebase_uid,
-                 name,
-                 email,
-                 phone,
-                 role,
                  restaurant_id,
+                 role,
+                 name,
                  active`,
               [
-                name,
-                firebaseEmail,
-                phone || null,
                 firebaseUid,
+                customerName,
+                restaurantId,
               ]
             );
 
             if (result.rowCount !== 1) {
               throw new Error(
-                'Existing user profile update failed'
+                'Existing customer profile update failed'
               );
             }
           }
