@@ -13,7 +13,8 @@
     "db:bootstrap": "node ./db/bootstrap-database.js",
     "bootstrap:restaurant": "node scripts/bootstrap-restaurant.js",
     "bootstrap:manager": "node scripts/bootstrap-manager.js",
-    "bootstrap:tables": "node scripts/bootstrap-tables.js"
+    "bootstrap:tables": "node scripts/bootstrap-tables.js",
+    "bootstrap:menu": "node scripts/bootstrap-menu.js"
   },
   "keywords": [],
   "author": "",
