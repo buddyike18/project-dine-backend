@@ -136,8 +136,16 @@ module.exports = function staffRoutes(pool, verifyToken, firebaseAdmin) {
       return res.status(403).json({ error: 'Forbidden' });
     }
 
+    let client;
+    let previousClaims = null;
+    let claimsUpdated = false;
+    let committed = false;
+
     try {
-      const result = await pool.query(
+      client = await pool.connect();
+      await client.query('BEGIN');
+
+      const result = await client.query(
         `
           INSERT INTO users (firebase_uid, restaurant_id, role, name, active)
           VALUES ($1, $2, $3, $4, true)
@@ -146,27 +154,77 @@ module.exports = function staffRoutes(pool, verifyToken, firebaseAdmin) {
         [firebaseUid, restaurantId, role, name]
       );
 
-      if (firebaseAdmin?.auth) {
-        await firebaseAdmin.auth().setCustomUserClaims(firebaseUid, {
-          role,
-          restaurantId,
-          staff_user_id: result.rows[0].id,
-        });
-      } else {
-        req.logEvent?.(
-          'warn',
-          'staff_custom_claims_skipped',
-          { reason: 'FIREBASE_ADMIN_UNAVAILABLE' }
-        );
+      if (!firebaseAdmin?.auth) {
+        const error = new Error('Firebase Admin unavailable');
+        error.code = 'FIREBASE_ADMIN_UNAVAILABLE';
+        throw error;
       }
 
-      res.status(201).json({ staff: result.rows[0] });
+      const firebaseUser = await firebaseAdmin.auth().getUser(firebaseUid);
+      previousClaims = firebaseUser.customClaims || {};
+
+      await firebaseAdmin.auth().setCustomUserClaims(firebaseUid, {
+        ...previousClaims,
+        role,
+        restaurantId,
+        staff_user_id: result.rows[0].id,
+      });
+
+      claimsUpdated = true;
+
+      await client.query('COMMIT');
+      committed = true;
+
+      return res.status(201).json({ staff: result.rows[0] });
     } catch (error) {
+      if (client && !committed) {
+        try {
+          await client.query('ROLLBACK');
+        } catch (rollbackError) {
+          req.logEvent?.(
+            'error',
+            'staff_create_rollback_failed',
+            {
+              code: rollbackError?.code || null,
+              message: rollbackError?.message || 'Unknown rollback failure',
+            }
+          );
+        }
+      }
+
+      if (claimsUpdated && !committed && firebaseAdmin?.auth) {
+        try {
+          await firebaseAdmin.auth().setCustomUserClaims(
+            firebaseUid,
+            previousClaims || {}
+          );
+        } catch (claimsRollbackError) {
+          req.logEvent?.(
+            'error',
+            'staff_custom_claims_rollback_failed',
+            {
+              code: claimsRollbackError?.code || null,
+              message: claimsRollbackError?.message || 'Unknown claims rollback failure',
+            }
+          );
+        }
+      }
+
       if (error.code === '23505') {
         return res.status(409).json({ error: 'Staff member already exists' });
       }
 
-      sendStaffError(req, res, error, 'STAFF_CREATE_FAILED');
+      if (error.code === 'FIREBASE_ADMIN_UNAVAILABLE') {
+        req.logEvent?.(
+          'error',
+          'staff_custom_claims_unavailable',
+          { reason: 'FIREBASE_ADMIN_UNAVAILABLE' }
+        );
+      }
+
+      return sendStaffError(req, res, error, 'STAFF_CREATE_FAILED');
+    } finally {
+      client?.release();
     }
   });
 
