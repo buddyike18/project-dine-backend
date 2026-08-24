@@ -60,7 +60,7 @@ module.exports = async function verifyToken(req, res, next) {
     let normalizedRole = null;
     if (rawRole) {
       const r = String(rawRole).trim().toLowerCase();
-      else if (r === 'employee') normalizedRole = 'Employee';
+      if (r === 'employee') normalizedRole = 'Employee';
       else if (r === 'manager') normalizedRole = 'Manager';
       else if (r === 'customer') normalizedRole = 'Customer';
       else if (r === 'staff') normalizedRole = 'Employee';
