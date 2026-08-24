@@ -262,20 +262,32 @@ async function run() {
 
     const seededLedger = await client.query(`
       SELECT filename
-      FROM public.schema_migrations
-      ORDER BY filename;
+      FROM public.schema_migrations;
     `);
 
     const seededFilenames = seededLedger.rows.map(
       (row) => row.filename
     );
 
+    const seededFilenameSet = new Set(seededFilenames);
+    const baselineFilenameSet = new Set(baselineFilenames);
+
+    const hasDuplicateSeededFilenames =
+      seededFilenameSet.size !== seededFilenames.length;
+
+    const hasMissingBaselineFilename = baselineFilenames.some(
+      (filename) => !seededFilenameSet.has(filename)
+    );
+
+    const hasUnexpectedSeededFilename = seededFilenames.some(
+      (filename) => !baselineFilenameSet.has(filename)
+    );
+
     if (
       seededFilenames.length !== baselineFilenames.length ||
-      seededFilenames.some(
-        (filename, index) =>
-          filename !== baselineFilenames[index]
-      )
+      hasDuplicateSeededFilenames ||
+      hasMissingBaselineFilename ||
+      hasUnexpectedSeededFilename
     ) {
       throw new Error('BASELINE_LEDGER_VERIFICATION_FAILED');
     }
