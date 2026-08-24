@@ -66,7 +66,7 @@ function getPool(req) {
   return pool;
 }
 
-const MANAGER_PAYMENT_ROLES = new Set(['Owner', 'Manager']);
+const MANAGER_PAYMENT_ROLES = new Set(['Manager']);
 
 function canPayOrder(actor, order) {
   if (!actor || !order) return false;

@@ -8,7 +8,7 @@ const voidsCompsRoutes = require('./reports/voidsComps.routes');
 const laborRoutes = require('./reports/labor.routes');
 const exportsRoutes = require('./reports/exports.routes');
 
-const REPORT_MANAGER_ROLES = new Set(['Owner', 'Manager']);
+const REPORT_MANAGER_ROLES = new Set(['Manager']);
 
 function requireReportManager(pool) {
   return async (req, res, next) => {
@@ -52,7 +52,7 @@ function requireReportManager(pool) {
 
 /**
  * Phase 8 — Reporting & Analytics
- * Manager / Owner only
+ * Manager only
  *
  * This router exposes backend-authoritative reporting endpoints.
  * No POS, KDS, or customer workflows are permitted here.
@@ -60,7 +60,7 @@ function requireReportManager(pool) {
 module.exports = (pool, verifyToken) => {
   const router = express.Router();
 
-  // Enforce DB-backed manager / owner access for all reports
+  // Enforce DB-backed Manager access for all reports
   router.use(verifyToken);
   router.use(requireReportManager(pool));
 

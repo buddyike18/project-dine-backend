@@ -1,6 +1,6 @@
 /**
  * Phase 8.4 — Exports (CSV)
- * Backend-authoritative, owner/manager only (RBAC enforced at reports router level).
+ * Backend-authoritative, Manager only (RBAC enforced at reports router level).
  *
  * This module provides:
  *  - CSV serialization helpers

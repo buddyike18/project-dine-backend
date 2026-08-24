@@ -35,7 +35,6 @@ function normalizeRoleForDb(role) {
   const value = String(role || '').trim();
   if (!value) return null;
   const lower = value.toLowerCase();
-  if (lower === 'owner') return 'Owner';
   if (lower === 'manager') return 'Manager';
   if (lower === 'employee' || lower === 'staff') return 'Employee';
   if (lower === 'customer') return 'Customer';
@@ -60,7 +59,7 @@ function normalizeRequiredReason(meta, action) {
 }
 
 function isManagerRole(role) {
-  return role === 'Owner' || role === 'Manager';
+  return role === 'Manager';
 }
 
 function requireManagerActor(actor, action) {

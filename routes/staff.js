@@ -1,8 +1,8 @@
 const express = require('express');
 const { resolveActor } = require('../middleware/resolveActor');
 
-const ALLOWED_ROLES = new Set(['Owner', 'Manager', 'Employee']);
-const MANAGE_STAFF_ROLES = new Set(['Owner', 'Manager']);
+const ALLOWED_ROLES = new Set(['Manager', 'Employee']);
+const MANAGE_STAFF_ROLES = new Set(['Manager']);
 
 function createForbiddenError(message = 'Forbidden') {
   const error = new Error(message);
@@ -18,17 +18,19 @@ function requireManageStaff(actor) {
 }
 
 function canAssignRole(actor, targetRole) {
-  if (targetRole === 'Employee') return true;
-  if (targetRole === 'Manager') return actor?.role === 'Owner';
-  if (targetRole === 'Owner') return actor?.role === 'Owner';
-  return false;
+  if (actor?.role !== 'Manager') return false;
+
+  // Manager is the highest runtime role.
+  // Normal staff management may create Employees only.
+  return targetRole === 'Employee';
 }
 
 function canManageTargetRole(actor, targetRole) {
-  if (targetRole === 'Employee') return true;
-  if (targetRole === 'Manager') return actor?.role === 'Owner';
-  if (targetRole === 'Owner') return actor?.role === 'Owner';
-  return false;
+  if (actor?.role !== 'Manager') return false;
+
+  // A Manager may manage Employees but may not use normal staff routes
+  // to modify another Manager.
+  return targetRole === 'Employee';
 }
 
 async function resolveStaffActor(pool, req) {
@@ -416,10 +418,10 @@ module.exports = function staffRoutes(pool, verifyToken, firebaseAdmin) {
           WHERE id = $1
             AND restaurant_id = $2
             AND role <> 'Customer'
-            AND ($3 = 'Owner' OR role <> 'Owner')
+            AND role <> 'Manager'
           RETURNING id, name, role, active, created_at
         `,
-        [req.params.id, restaurantId, actor.role]
+        [req.params.id, restaurantId]
       );
 
       if (result.rowCount === 0) {
@@ -451,10 +453,10 @@ module.exports = function staffRoutes(pool, verifyToken, firebaseAdmin) {
           WHERE id = $1
             AND restaurant_id = $2
             AND role <> 'Customer'
-            AND ($3 = 'Owner' OR role <> 'Owner')
+            AND role <> 'Manager'
           RETURNING id, name, role, active, created_at
         `,
-        [req.params.id, restaurantId, actor.role]
+        [req.params.id, restaurantId]
       );
 
       if (result.rowCount === 0) {

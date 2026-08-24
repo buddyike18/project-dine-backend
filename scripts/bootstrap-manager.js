@@ -76,7 +76,7 @@ async function main() {
   const suppliedSecret = required('BOOTSTRAP_ADMIN_ROLE_SECRET');
   const firebaseUid = required('BOOTSTRAP_FIREBASE_UID');
   const restaurantId = required('BOOTSTRAP_RESTAURANT_ID');
-  const ownerName = required('BOOTSTRAP_OWNER_NAME');
+  const managerName = required('BOOTSTRAP_MANAGER_NAME');
 
   if (!secureEqual(configuredSecret, suppliedSecret)) {
     const error = new Error('Bootstrap authorization failed');
@@ -125,23 +125,23 @@ async function main() {
 
     /*
      * Bootstrap is permanently disabled for this restaurant as soon as
-     * an active Owner exists.
+     * an active Manager exists.
      */
-    const ownerResult = await client.query(
+    const managerResult = await client.query(
       `
         SELECT id
         FROM users
         WHERE restaurant_id = $1
-          AND role = 'Owner'
+          AND role = 'Manager'
           AND active = true
         LIMIT 1
       `,
       [restaurantId]
     );
 
-    if (ownerResult.rowCount > 0) {
+    if (managerResult.rowCount > 0) {
       const error = new Error(
-        'Bootstrap refused: an active Owner already exists for this restaurant'
+        'Bootstrap refused: an active Manager already exists for this restaurant'
       );
       error.code = 'BOOTSTRAP_OWNER_ALREADY_EXISTS';
       throw error;
@@ -178,7 +178,7 @@ async function main() {
           name,
           active
         )
-        VALUES ($1, $2, 'Owner', $3, true)
+        VALUES ($1, $2, 'Manager', $3, true)
         RETURNING
           id,
           firebase_uid,
@@ -188,16 +188,16 @@ async function main() {
           active,
           created_at
       `,
-      [firebaseUid, restaurantId, ownerName]
+      [firebaseUid, restaurantId, managerName]
     );
 
-    const owner = insertResult.rows[0];
+    const manager = insertResult.rows[0];
 
     await firebaseAdmin.auth().setCustomUserClaims(firebaseUid, {
       ...previousClaims,
-      role: 'Owner',
+      role: 'Manager',
       restaurantId,
-      staff_user_id: owner.id,
+      staff_user_id: manager.id,
     });
 
     claimsUpdated = true;
@@ -205,14 +205,14 @@ async function main() {
     await client.query('COMMIT');
     committed = true;
 
-    console.log('Initial Owner bootstrap succeeded.');
+    console.log('Initial Manager bootstrap succeeded.');
     console.log({
-      id: owner.id,
-      firebase_uid: owner.firebase_uid,
-      restaurant_id: owner.restaurant_id,
-      role: owner.role,
-      name: owner.name,
-      active: owner.active,
+      id: manager.id,
+      firebase_uid: manager.firebase_uid,
+      restaurant_id: manager.restaurant_id,
+      role: manager.role,
+      name: manager.name,
+      active: manager.active,
     });
   } catch (error) {
     if (client && !committed) {
@@ -254,7 +254,7 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error('Initial Owner bootstrap failed:', {
+  console.error('Initial Manager bootstrap failed:', {
     code: error?.code || null,
     message: error?.message || 'Unknown bootstrap failure',
   });

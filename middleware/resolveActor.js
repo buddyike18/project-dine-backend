@@ -1,6 +1,6 @@
 'use strict';
 
-const ALLOWED_ROLES = new Set(['Owner', 'Manager', 'Employee', 'Customer']);
+const ALLOWED_ROLES = new Set(['Manager', 'Employee', 'Customer']);
 
 function createActorError(message, statusCode) {
   const error = new Error(message);
@@ -12,8 +12,6 @@ function createActorError(message, statusCode) {
 function normalizeRole(role) {
   const value = String(role || '').trim();
   const lower = value.toLowerCase();
-
-  if (lower === 'owner') return 'Owner';
   if (lower === 'manager') return 'Manager';
   if (lower === 'employee' || lower === 'staff') return 'Employee';
   if (lower === 'customer') return 'Customer';

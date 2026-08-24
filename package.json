@@ -11,8 +11,8 @@
     "dev": "NODE_ENV=development node server.js",
     "db:migrate": "node ./db/run-migrations.js",
     "db:bootstrap": "node ./db/bootstrap-database.js",
-    "bootstrap:owner": "node scripts/bootstrap-owner.js",
-    "bootstrap:restaurant": "node scripts/bootstrap-restaurant.js"
+    "bootstrap:restaurant": "node scripts/bootstrap-restaurant.js",
+    "bootstrap:manager": "node scripts/bootstrap-manager.js"
   },
   "keywords": [],
   "author": "",

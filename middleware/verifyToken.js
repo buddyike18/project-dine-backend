@@ -55,12 +55,11 @@ module.exports = async function verifyToken(req, res, next) {
     const rawRole = decoded.role || claims.role || null;
 
     // Normalize role to DB enum values (role_type)
-    // Supported canonical roles: Owner, Manager, Employee, Customer
+    // Supported canonical roles: Manager, Employee, Customer
     // Transitional safety: treat legacy "staff" as Employee.
     let normalizedRole = null;
     if (rawRole) {
       const r = String(rawRole).trim().toLowerCase();
-      if (r === 'owner') normalizedRole = 'Owner';
       else if (r === 'employee') normalizedRole = 'Employee';
       else if (r === 'manager') normalizedRole = 'Manager';
       else if (r === 'customer') normalizedRole = 'Customer';

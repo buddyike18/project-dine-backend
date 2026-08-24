@@ -1,8 +1,8 @@
 const express = require('express');
 const { resolveActor } = require('../middleware/resolveActor');
 
-const STAFF_ASSIGNMENT_VIEW_ROLES = new Set(['Owner', 'Manager', 'Employee']);
-const STAFF_ASSIGNMENT_MANAGE_ROLES = new Set(['Owner', 'Manager']);
+const STAFF_ASSIGNMENT_VIEW_ROLES = new Set(['Manager', 'Employee']);
+const STAFF_ASSIGNMENT_MANAGE_ROLES = new Set(['Manager']);
 
 function requireRole(actor, allowedRoles) {
   if (!actor?.role || !allowedRoles.has(actor.role)) {

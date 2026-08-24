@@ -42,10 +42,7 @@ function isValidTableId(value) {
 }
 
 function isManagerActor(req) {
-  return (
-    req.actor?.role === 'Owner' ||
-    req.actor?.role === 'Manager'
-  );
+  return req.actor?.role === 'Manager';
 }
 
 function hashSessionToken(value) {

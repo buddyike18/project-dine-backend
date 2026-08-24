@@ -24,7 +24,7 @@ function handleError(req, res, reason) {
   });
 }
 
-const MENU_MANAGER_ROLES = new Set(['Owner', 'Manager']);
+const MENU_MANAGER_ROLES = new Set(['Manager']);
 
 async function resolveMenuManager(pool, req) {
   const actor = await resolveActor(pool, req);

@@ -16,11 +16,11 @@
  *
  * The POS must consume backend results as-is.
  * Employees may only see orders they created.
- * Managers (and above) may see all restaurant orders.
+ * Managers may see all restaurant orders.
  *
  * NOTE: This module remains SQL-only. Role checks here only determine SQL scope.
  */
-const MANAGER_ROLES = new Set(['manager', 'owner', 'admin']);
+const MANAGER_ROLES = new Set(['manager']);
 
 /**
  * @typedef {Object} OrderVisibilityContext

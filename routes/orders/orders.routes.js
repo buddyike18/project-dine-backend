@@ -70,10 +70,10 @@ module.exports = function buildOrdersRouter({ pool, verifyToken, handleError }) 
   };
 
   // Phase 7.1 — Role scope helpers (route-level)
-  const MANAGER_SCOPE = new Set(['manager', 'owner']);
+  const MANAGER_SCOPE = new Set(['manager']);
   const isManagerScope = (role) => MANAGER_SCOPE.has(String(role || '').toLowerCase());
 
-  const OPERATIONAL_SCOPE = new Set(['owner', 'manager', 'employee']);
+  const OPERATIONAL_SCOPE = new Set(['manager', 'employee']);
   const isOperationalScope = (role) => OPERATIONAL_SCOPE.has(String(role || '').toLowerCase());
 
   const employeeHasActiveTableAssignment = async ({
@@ -99,7 +99,6 @@ module.exports = function buildOrdersRouter({ pool, verifyToken, handleError }) 
 
   const normalizeRoleForDb = (rawRole) => {
     const r = String(rawRole || '').trim().toLowerCase();
-    if (r === 'owner') return 'Owner';
     if (r === 'manager') return 'Manager';
     if (r === 'employee' || r === 'staff') return 'Employee';
     if (r === 'customer') return 'Customer';
