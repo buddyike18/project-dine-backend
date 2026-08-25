@@ -516,6 +516,8 @@ async function compOrder(
       [orderId, restaurantId, remainingCompCents]
     );
 
+    let finalOrder = upd.rows[0];
+
     const meta_payload = {
       reason,
       comped_cents: remainingCompCents,
@@ -538,8 +540,8 @@ async function compOrder(
            created_at
          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NOW())`,
         [
-          upd.rows[0].id,
-          upd.rows[0].restaurant_id,
+          finalOrder.id,
+          finalOrder.restaurant_id,
           'ORDER_COMPED',
           null,
           null,
@@ -561,13 +563,64 @@ async function compOrder(
       throw e;
     }
 
+    const isFullySettled =
+      Number(finalOrder.paid_cents) + Number(finalOrder.comped_cents) >=
+      Number(finalOrder.total_cents);
+
+    if (finalOrder.status === ORDER_STATUS.OPEN && isFullySettled) {
+      const sentUpd = await client.query(
+        `UPDATE orders
+         SET status = $1,
+             sent_at = COALESCE(sent_at, NOW())
+         WHERE id = $2 AND restaurant_id = $3
+         RETURNING
+           id,
+           restaurant_id,
+           status,
+           total_cents,
+           paid_cents,
+           comped_cents`,
+        [ORDER_STATUS.SENT, orderId, restaurantId]
+      );
+
+      finalOrder = sentUpd.rows[0];
+
+      await client.query(
+        `INSERT INTO order_events (
+           order_id,
+           restaurant_id,
+           event_type,
+           from_status,
+           to_status,
+           actor_type,
+           actor_role,
+           actor_user_id,
+           actor_firebase_uid,
+           meta,
+           created_at
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NOW())`,
+        [
+          finalOrder.id,
+          finalOrder.restaurant_id,
+          'STATUS_CHANGED',
+          ORDER_STATUS.OPEN,
+          ORDER_STATUS.SENT,
+          auditActor.actor_type,
+          auditActor.actor_role,
+          auditActor.actor_user_id,
+          auditActor.actor_firebase_uid,
+          null,
+        ]
+      );
+    }
+
     await client.query('COMMIT');
     return {
-      order_id: upd.rows[0].id,
-      current_state: upd.rows[0].status,
-      paid_cents: Number(upd.rows[0].paid_cents || 0),
-      comped_cents: Number(upd.rows[0].comped_cents || 0),
-      total_cents: Number(upd.rows[0].total_cents || 0),
+      order_id: finalOrder.id,
+      current_state: finalOrder.status,
+      paid_cents: Number(finalOrder.paid_cents || 0),
+      comped_cents: Number(finalOrder.comped_cents || 0),
+      total_cents: Number(finalOrder.total_cents || 0),
       is_noop: false,
     };
   } catch (err) {
