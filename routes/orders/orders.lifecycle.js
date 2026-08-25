@@ -609,7 +609,7 @@ async function compOrder(
           auditActor.actor_role,
           auditActor.actor_user_id,
           auditActor.actor_firebase_uid,
-          null,
+          {},
         ]
       );
     }
