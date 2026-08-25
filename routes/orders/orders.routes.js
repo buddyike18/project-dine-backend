@@ -1173,19 +1173,6 @@ module.exports = function buildOrdersRouter({ pool, verifyToken, handleError }) 
               comped_cents: out.comped_cents,
             });
           } catch (err) {
-            req.logEvent?.(
-              'error',
-              'order_comp_exception',
-              {
-                name: err?.name || null,
-                code: err?.code || null,
-                constraint: err?.constraint || null,
-                table: err?.table || null,
-                column: err?.column || null,
-                message: err?.message || null,
-              }
-            );
-
             handleErrorWithStatus(res, err);
           }
         }
