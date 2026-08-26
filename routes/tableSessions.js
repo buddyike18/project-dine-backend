@@ -535,7 +535,7 @@ module.exports = (pool, verifyToken) => {
         const networkAllowed =
           await consumeVerificationAttempt(
             pool,
-            'TABLE_LINK_NETWORK',
+            'network',
             clientKey,
             NETWORK_RATE_LIMIT_MAX_REQUESTS
           );
@@ -578,7 +578,7 @@ module.exports = (pool, verifyToken) => {
         const credentialAllowed =
           await consumeVerificationAttempt(
             pool,
-            'TABLE_LINK_CREDENTIAL',
+            'token',
             credentialKey,
             TOKEN_RATE_LIMIT_MAX_REQUESTS
           );
