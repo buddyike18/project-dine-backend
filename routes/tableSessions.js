@@ -41,6 +41,57 @@ function isValidTableId(value) {
   );
 }
 
+function isValidTableUuid(value) {
+  return (
+    typeof value === 'string' &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
+  );
+}
+
+function isValidTableSignature(value) {
+  return (
+    typeof value === 'string' &&
+    /^[0-9a-f]{64}$/i.test(value)
+  );
+}
+
+function signTableLink(tableUuid, signingSecret) {
+  return crypto
+    .createHmac('sha256', signingSecret)
+    .update(tableUuid, 'utf8')
+    .digest('hex');
+}
+
+function verifyTableLinkSignature(
+  tableUuid,
+  suppliedSignature,
+  signingSecret
+) {
+  if (
+    !isValidTableUuid(tableUuid) ||
+    !isValidTableSignature(suppliedSignature) ||
+    typeof signingSecret !== 'string' ||
+    signingSecret.length === 0
+  ) {
+    return false;
+  }
+
+  const expected = Buffer.from(
+    signTableLink(tableUuid, signingSecret),
+    'hex'
+  );
+
+  const supplied = Buffer.from(
+    suppliedSignature,
+    'hex'
+  );
+
+  return (
+    expected.length === supplied.length &&
+    crypto.timingSafeEqual(expected, supplied)
+  );
+}
+
 function isManagerActor(req) {
   return req.actor?.role === 'Manager';
 }
@@ -458,6 +509,154 @@ module.exports = (pool, verifyToken) => {
       return res.status(200).json({
         success: true,
       });
+    }
+  );
+
+  router.post(
+    '/verify-table-link',
+    async (req, res) => {
+      const tableUuid = String(
+        req.body?.table || ''
+      ).trim();
+
+      const signature = String(
+        req.body?.sig || ''
+      ).trim();
+
+      const clientKey = getRateLimitClientKey(req);
+
+      try {
+        if (!clientKey) {
+          return res.status(400).json({
+            error: 'Unable to verify table link',
+          });
+        }
+
+        const networkAllowed =
+          await consumeVerificationAttempt(
+            pool,
+            'TABLE_LINK_NETWORK',
+            clientKey,
+            NETWORK_RATE_LIMIT_MAX_REQUESTS
+          );
+
+        if (!networkAllowed) {
+          return res.status(429).json({
+            error: 'Too many verification attempts',
+          });
+        }
+
+        if (
+          !isValidTableUuid(tableUuid) ||
+          !isValidTableSignature(signature)
+        ) {
+          return res.status(400).json({
+            error: 'Invalid table link',
+          });
+        }
+
+        const signingSecret =
+          config.links?.tableLinkSigningSecret;
+
+        if (
+          typeof signingSecret !== 'string' ||
+          signingSecret.length === 0
+        ) {
+          return res.status(503).json({
+            error: 'Table link verification unavailable',
+          });
+        }
+
+        const credentialKey = crypto
+          .createHash('sha256')
+          .update(
+            `${tableUuid}:${signature}`,
+            'utf8'
+          )
+          .digest();
+
+        const credentialAllowed =
+          await consumeVerificationAttempt(
+            pool,
+            'TABLE_LINK_CREDENTIAL',
+            credentialKey,
+            TOKEN_RATE_LIMIT_MAX_REQUESTS
+          );
+
+        if (!credentialAllowed) {
+          return res.status(429).json({
+            error: 'Too many verification attempts',
+          });
+        }
+
+        const signatureValid =
+          verifyTableLinkSignature(
+            tableUuid,
+            signature,
+            signingSecret
+          );
+
+        if (!signatureValid) {
+          return res.status(400).json({
+            error: 'Invalid table link',
+          });
+        }
+
+        const result = await pool.query(
+          `SELECT
+             rt.restaurant_id,
+             rt.table_id
+           FROM restaurant_tables rt
+           JOIN restaurants r
+             ON r.id = rt.restaurant_id
+           WHERE rt.id = $1
+             AND rt.active = TRUE
+             AND r.active = TRUE
+           LIMIT 1`,
+          [tableUuid]
+        );
+
+        if (result.rowCount !== 1) {
+          return res.status(404).json({
+            error: 'Table not available',
+          });
+        }
+
+        return res.status(200).json({
+          session: {
+            restaurantId:
+              result.rows[0].restaurant_id,
+            table:
+              result.rows[0].table_id,
+          },
+        });
+      } catch (error) {
+        const databaseUnavailable =
+          isDatabaseUnavailable(error);
+
+        console.error(
+          '[TABLE_SESSION_TABLE_LINK_VERIFY_FAILED]',
+          {
+            error:
+              databaseUnavailable
+                ? 'DATABASE_UNAVAILABLE'
+                : 'INTERNAL_ERROR',
+          }
+        );
+
+        return res
+          .status(
+            databaseUnavailable
+              ? 503
+              : 500
+          )
+          .json({
+            error:
+              databaseUnavailable
+                ? 'Table link verification unavailable'
+                : 'Unable to verify table link',
+          });
+      }
     }
   );
 

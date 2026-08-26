@@ -268,6 +268,29 @@ function readTableSessionLinkBaseUrl(appEnv) {
 }
 
 
+function readTableLinkSigningSecret(appEnv) {
+  const rawValue = String(
+    process.env.TABLE_LINK_SIGNING_SECRET ?? ''
+  ).trim();
+
+  if (!rawValue) {
+    if (appEnv === 'production') {
+      fail('Missing required env: TABLE_LINK_SIGNING_SECRET');
+    }
+
+    return null;
+  }
+
+  if (!/^[0-9a-fA-F]{64}$/.test(rawValue)) {
+    fail(
+      'TABLE_LINK_SIGNING_SECRET must be exactly 64 hexadecimal characters'
+    );
+  }
+
+  return rawValue.toLowerCase();
+}
+
+
 function buildMigrationConfig() {
   const appEnv = required('APP_ENV');
 
@@ -345,6 +368,9 @@ function buildConfig() {
 
   const tableSessionLinkBaseUrl =
     readTableSessionLinkBaseUrl(appEnv);
+
+  const tableLinkSigningSecret =
+    readTableLinkSigningSecret(appEnv);
 
   const nodeEnv = optional(
     'NODE_ENV',
@@ -565,6 +591,7 @@ function buildConfig() {
     links: {
       tableSessionBaseUrl:
         tableSessionLinkBaseUrl,
+      tableLinkSigningSecret,
     },
 
     server: {
