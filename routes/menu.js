@@ -378,6 +378,117 @@ module.exports = (pool, verifyToken) => {
     }
   });
 
+  // Phase 41B — Create menu item
+  router.post('/items', verifyToken, async (req, res) => {
+    try {
+      const actor = await resolveMenuManager(pool, req);
+      const restaurant_id = actor.restaurantId;
+
+      const category_id =
+        req.body.category_id === undefined || req.body.category_id === null || req.body.category_id === ''
+          ? null
+          : String(req.body.category_id).trim();
+
+      const name = String(req.body.name || '').trim();
+      const price_cents = Number(req.body.price_cents);
+      const tax_rate_bps = Number(req.body.tax_rate_bps);
+      const active = req.body.active === undefined ? true : req.body.active;
+      const available = req.body.available === undefined ? true : req.body.available;
+
+      if (category_id !== null && !isUuid(category_id)) {
+        return res.status(400).json({ error: 'category_id must be a valid UUID or null' });
+      }
+
+      if (!name) {
+        return res.status(400).json({ error: 'name is required' });
+      }
+
+      if (!Number.isInteger(price_cents) || price_cents < 0) {
+        return res.status(400).json({ error: 'price_cents must be an integer greater than or equal to 0' });
+      }
+
+      if (!Number.isInteger(tax_rate_bps) || tax_rate_bps < 0) {
+        return res.status(400).json({ error: 'tax_rate_bps must be an integer greater than or equal to 0' });
+      }
+
+      if (typeof active !== 'boolean') {
+        return res.status(400).json({ error: 'active must be boolean' });
+      }
+
+      if (typeof available !== 'boolean') {
+        return res.status(400).json({ error: 'available must be boolean' });
+      }
+
+      if (category_id !== null) {
+        const category = await pool.query(
+          `SELECT id
+           FROM menu_categories
+           WHERE id = $1
+             AND restaurant_id = $2
+           LIMIT 1`,
+          [category_id, restaurant_id]
+        );
+
+        if (category.rowCount === 0) {
+          return res.status(400).json({ error: 'category_id must belong to the same restaurant' });
+        }
+      }
+
+      const duplicate = category_id === null
+        ? await pool.query(
+            `SELECT id
+             FROM menu_items
+             WHERE restaurant_id = $1
+               AND category_id IS NULL
+               AND LOWER(name) = LOWER($2)
+             LIMIT 1`,
+            [restaurant_id, name]
+          )
+        : await pool.query(
+            `SELECT id
+             FROM menu_items
+             WHERE restaurant_id = $1
+               AND category_id = $2
+               AND LOWER(name) = LOWER($3)
+             LIMIT 1`,
+            [restaurant_id, category_id, name]
+          );
+
+      if (duplicate.rowCount > 0) {
+        return res.status(409).json({ error: 'Item already exists in this category' });
+      }
+
+      const result = await pool.query(
+        `INSERT INTO menu_items (
+           restaurant_id,
+           category_id,
+           name,
+           price_cents,
+           tax_rate_bps,
+           active,
+           available
+         )
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         RETURNING id,
+                   restaurant_id,
+                   category_id,
+                   name,
+                   price_cents,
+                   tax_rate_bps,
+                   active,
+                   available`,
+        [restaurant_id, category_id, name, price_cents, tax_rate_bps, active, available]
+      );
+
+      return res.status(201).json({ item: result.rows[0] });
+    } catch (err) {
+      if (isUniqueViolation(err)) {
+        return res.status(409).json({ error: 'Item already exists in this category' });
+      }
+      return sendMenuError(req, res, err, 'MENU_ITEM_CREATE_FAILED');
+    }
+  });
+
   router.patch('/items/:itemId', verifyToken, async (req, res) => {
     const itemId = String(req.params.itemId || '').trim();
     let actor;
@@ -611,6 +722,87 @@ module.exports = (pool, verifyToken) => {
       return res.json({ modifier_groups: result.rows });
     } catch (err) {
       return sendMenuError(req, res, err, 'MENU_MANAGE_MODIFIER_GROUPS_READ_FAILED');
+    }
+  });
+
+  // Phase 41B — Create modifier group
+  router.post('/modifier-groups', verifyToken, async (req, res) => {
+    try {
+      const actor = await resolveMenuManager(pool, req);
+      const restaurant_id = actor.restaurantId;
+
+      const name = String(req.body.name || '').trim();
+      const min_select = req.body.min_select === undefined ? 0 : Number(req.body.min_select);
+      const max_select = req.body.max_select === undefined ? 1 : Number(req.body.max_select);
+      const sort_order = req.body.sort_order === undefined ? 0 : Number(req.body.sort_order);
+      const active = req.body.active === undefined ? true : req.body.active;
+      const required = min_select > 0;
+
+      if (!name) {
+        return res.status(400).json({ error: 'name is required' });
+      }
+
+      if (!Number.isInteger(min_select) || min_select < 0) {
+        return res.status(400).json({ error: 'min_select must be an integer greater than or equal to 0' });
+      }
+
+      if (!Number.isInteger(max_select) || max_select < 0) {
+        return res.status(400).json({ error: 'max_select must be an integer greater than or equal to 0' });
+      }
+
+      if (max_select < min_select) {
+        return res.status(400).json({ error: 'max_select must be greater than or equal to min_select' });
+      }
+
+      if (!Number.isInteger(sort_order)) {
+        return res.status(400).json({ error: 'sort_order must be an integer' });
+      }
+
+      if (typeof active !== 'boolean') {
+        return res.status(400).json({ error: 'active must be boolean' });
+      }
+
+      const duplicate = await pool.query(
+        `SELECT id
+         FROM modifier_groups
+         WHERE restaurant_id = $1
+           AND LOWER(name) = LOWER($2)
+         LIMIT 1`,
+        [restaurant_id, name]
+      );
+
+      if (duplicate.rowCount > 0) {
+        return res.status(409).json({ error: 'Modifier group already exists' });
+      }
+
+      const result = await pool.query(
+        `INSERT INTO modifier_groups (
+           restaurant_id,
+           name,
+           min_select,
+           max_select,
+           required,
+           sort_order,
+           active
+         )
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         RETURNING id,
+                   restaurant_id,
+                   name,
+                   min_select,
+                   max_select,
+                   required,
+                   sort_order,
+                   active`,
+        [restaurant_id, name, min_select, max_select, required, sort_order, active]
+      );
+
+      return res.status(201).json({ modifier_group: result.rows[0] });
+    } catch (err) {
+      if (isUniqueViolation(err)) {
+        return res.status(409).json({ error: 'Modifier group already exists' });
+      }
+      return sendMenuError(req, res, err, 'MENU_MODIFIER_GROUP_CREATE_FAILED');
     }
   });
 
