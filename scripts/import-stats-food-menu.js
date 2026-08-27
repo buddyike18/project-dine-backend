@@ -10,11 +10,52 @@ const RESTAURANT_ID =
 
 const APPLY = process.argv.includes('--apply');
 
-if (APPLY) {
-  console.error(
-    'APPLY_DISABLED: this importer is currently dry-run only'
+const confirmRestaurantArg =
+  process.argv.find(
+    (arg) =>
+      arg.startsWith(
+        '--confirm-restaurant='
+      )
   );
-  process.exit(1);
+
+const CONFIRMED_RESTAURANT_ID =
+  confirmRestaurantArg
+    ? confirmRestaurantArg
+        .slice(
+          '--confirm-restaurant='.length
+        )
+        .trim()
+    : '';
+
+function assertApplyGuard() {
+  if (!APPLY) {
+    return;
+  }
+
+  if (
+    !process.env.STATS_RESTAURANT_ID
+  ) {
+    throw new Error(
+      'APPLY_GUARD_FAILED: STATS_RESTAURANT_ID must be explicitly set'
+    );
+  }
+
+  if (
+    !CONFIRMED_RESTAURANT_ID
+  ) {
+    throw new Error(
+      'APPLY_GUARD_FAILED: --confirm-restaurant=<uuid> is required'
+    );
+  }
+
+  if (
+    CONFIRMED_RESTAURANT_ID !==
+    RESTAURANT_ID
+  ) {
+    throw new Error(
+      'APPLY_GUARD_FAILED: --confirm-restaurant does not match STATS_RESTAURANT_ID'
+    );
+  }
 }
 
 /*
@@ -44,10 +85,1101 @@ function printAction(action, type, name, details = '') {
   );
 }
 
+
+async function loadMenuState(
+  client,
+  restaurantId
+) {
+  const [
+    categories,
+    items,
+    groups,
+    options,
+    links,
+  ] = await Promise.all([
+    client.query(
+      `
+        SELECT *
+        FROM public.menu_categories
+        WHERE restaurant_id = $1
+      `,
+      [restaurantId]
+    ),
+
+    client.query(
+      `
+        SELECT *
+        FROM public.menu_items
+        WHERE restaurant_id = $1
+      `,
+      [restaurantId]
+    ),
+
+    client.query(
+      `
+        SELECT *
+        FROM public.modifier_groups
+        WHERE restaurant_id = $1
+      `,
+      [restaurantId]
+    ),
+
+    client.query(
+      `
+        SELECT mo.*
+        FROM public.modifier_options mo
+        JOIN public.modifier_groups mg
+          ON mg.id = mo.group_id
+        WHERE mg.restaurant_id = $1
+      `,
+      [restaurantId]
+    ),
+
+    client.query(
+      `
+        SELECT
+          rel.menu_item_id,
+          rel.group_id,
+          rel.sort_order
+        FROM public.menu_item_modifier_groups rel
+        JOIN public.menu_items mi
+          ON mi.id = rel.menu_item_id
+        WHERE mi.restaurant_id = $1
+      `,
+      [restaurantId]
+    ),
+  ]);
+
+  return {
+    categories: categories.rows,
+    items: items.rows,
+    groups: groups.rows,
+    options: options.rows,
+    links: links.rows,
+  };
+}
+
+function findCategory(
+  state,
+  name
+) {
+  return state.categories.find(
+    (row) =>
+      normalize(row.name) ===
+      normalize(name)
+  );
+}
+
+function findItem(
+  state,
+  categoryId,
+  name
+) {
+  return state.items.find(
+    (row) =>
+      row.category_id === categoryId &&
+      normalize(row.name) ===
+        normalize(name)
+  );
+}
+
+function findGroup(
+  state,
+  name
+) {
+  return state.groups.find(
+    (row) =>
+      normalize(row.name) ===
+      normalize(name)
+  );
+}
+
+function findOption(
+  state,
+  groupId,
+  desired
+) {
+  const acceptedNames =
+    new Set(
+      [
+        desired.name,
+        ...(desired.aliases || []),
+      ].map(normalize)
+    );
+
+  return state.options.find(
+    (row) =>
+      row.group_id === groupId &&
+      acceptedNames.has(
+        normalize(row.name)
+      )
+  );
+}
+
+async function resolveNewItemTaxRateBps(
+  client,
+  restaurantId
+) {
+  const result =
+    await client.query(
+      `
+        SELECT DISTINCT
+          tax_rate_bps
+        FROM public.menu_items
+        WHERE restaurant_id = $1
+          AND active = TRUE
+          AND tax_rate_bps IS NOT NULL
+        ORDER BY tax_rate_bps
+      `,
+      [restaurantId]
+    );
+
+  if (result.rowCount !== 1) {
+    throw new Error(
+      `NEW_ITEM_TAX_RATE_UNRESOLVED: expected exactly one active tax rate, found ${result.rowCount}`
+    );
+  }
+
+  const taxRateBps =
+    Number(
+      result.rows[0]
+        .tax_rate_bps
+    );
+
+  if (
+    !Number.isInteger(
+      taxRateBps
+    ) ||
+    taxRateBps < 0
+  ) {
+    throw new Error(
+      'NEW_ITEM_TAX_RATE_INVALID'
+    );
+  }
+
+  return taxRateBps;
+}
+
+async function applyCategories(
+  client,
+  restaurantId
+) {
+  let state =
+    await loadMenuState(
+      client,
+      restaurantId
+    );
+
+  for (
+    const desired
+    of MENU.categories
+  ) {
+    const existing =
+      findCategory(
+        state,
+        desired.name
+      );
+
+    if (existing) {
+      await client.query(
+        `
+          UPDATE public.menu_categories
+          SET
+            name = $1,
+            sort_order = $2,
+            active = TRUE
+          WHERE id = $3
+            AND restaurant_id = $4
+        `,
+        [
+          desired.name,
+          desired.sortOrder,
+          existing.id,
+          restaurantId,
+        ]
+      );
+
+      continue;
+    }
+
+    await client.query(
+      `
+        INSERT INTO public.menu_categories (
+          restaurant_id,
+          name,
+          sort_order,
+          active
+        )
+        VALUES ($1, $2, $3, TRUE)
+      `,
+      [
+        restaurantId,
+        desired.name,
+        desired.sortOrder,
+      ]
+    );
+
+    state =
+      await loadMenuState(
+        client,
+        restaurantId
+      );
+  }
+}
+
+async function applyItems(
+  client,
+  restaurantId
+) {
+  let state =
+    await loadMenuState(
+      client,
+      restaurantId
+    );
+
+  const newItemTaxRateBps =
+    await resolveNewItemTaxRateBps(
+      client,
+      restaurantId
+    );
+
+  for (
+    const desired
+    of MENU.items
+  ) {
+    const category =
+      findCategory(
+        state,
+        desired.category
+      );
+
+    if (!category) {
+      throw new Error(
+        `APPLY_CATEGORY_NOT_FOUND: ${desired.category}`
+      );
+    }
+
+    const existing =
+      findItem(
+        state,
+        category.id,
+        desired.name
+      );
+
+    if (existing) {
+      await client.query(
+        `
+          UPDATE public.menu_items
+          SET
+            category_id = $1,
+            name = $2,
+            description = $3,
+            price_cents = $4,
+            tax_rate_bps = $5,
+            sort_order = $6,
+            active = $7,
+            available = $8
+          WHERE id = $9
+            AND restaurant_id = $10
+        `,
+        [
+          category.id,
+          desired.name,
+          desired.description,
+          desired.priceCents,
+          existing.tax_rate_bps,
+          desired.sortOrder,
+          desired.active,
+          desired.available,
+          existing.id,
+          restaurantId,
+        ]
+      );
+
+      continue;
+    }
+
+    await client.query(
+      `
+        INSERT INTO public.menu_items (
+          restaurant_id,
+          category_id,
+          name,
+          description,
+          price_cents,
+          tax_rate_bps,
+          sort_order,
+          active,
+          available
+        )
+        VALUES (
+          $1, $2, $3, $4, $5,
+          $6, $7, $8, $9
+        )
+      `,
+      [
+        restaurantId,
+        category.id,
+        desired.name,
+        desired.description,
+        desired.priceCents,
+        newItemTaxRateBps,
+        desired.sortOrder,
+        desired.active,
+        desired.available,
+      ]
+    );
+
+    state =
+      await loadMenuState(
+        client,
+        restaurantId
+      );
+  }
+}
+
+async function applyModifierGroups(
+  client,
+  restaurantId
+) {
+  let state =
+    await loadMenuState(
+      client,
+      restaurantId
+    );
+
+  for (
+    let index = 0;
+    index <
+      MENU.modifierGroups.length;
+    index += 1
+  ) {
+    const desired =
+      MENU.modifierGroups[
+        index
+      ];
+
+    const sortOrder =
+      index + 1;
+
+    const existing =
+      findGroup(
+        state,
+        desired.name
+      );
+
+    if (existing) {
+      await client.query(
+        `
+          UPDATE public.modifier_groups
+          SET
+            name = $1,
+            min_select = $2,
+            max_select = $3,
+            required = $4,
+            sort_order = $5,
+            active = TRUE
+          WHERE id = $6
+            AND restaurant_id = $7
+        `,
+        [
+          desired.name,
+          desired.minSelect,
+          desired.maxSelect,
+          desired.required,
+          sortOrder,
+          existing.id,
+          restaurantId,
+        ]
+      );
+
+      continue;
+    }
+
+    await client.query(
+      `
+        INSERT INTO public.modifier_groups (
+          restaurant_id,
+          name,
+          min_select,
+          max_select,
+          required,
+          sort_order,
+          active
+        )
+        VALUES (
+          $1, $2, $3, $4,
+          $5, $6, TRUE
+        )
+      `,
+      [
+        restaurantId,
+        desired.name,
+        desired.minSelect,
+        desired.maxSelect,
+        desired.required,
+        sortOrder,
+      ]
+    );
+
+    state =
+      await loadMenuState(
+        client,
+        restaurantId
+      );
+  }
+}
+
+async function applyModifierOptions(
+  client,
+  restaurantId
+) {
+  let state =
+    await loadMenuState(
+      client,
+      restaurantId
+    );
+
+  for (
+    const desiredGroup
+    of MENU.modifierGroups
+  ) {
+    const group =
+      findGroup(
+        state,
+        desiredGroup.name
+      );
+
+    if (!group) {
+      throw new Error(
+        `APPLY_GROUP_NOT_FOUND: ${desiredGroup.name}`
+      );
+    }
+
+    for (
+      const desiredOption
+      of desiredGroup.options
+    ) {
+      const existing =
+        findOption(
+          state,
+          group.id,
+          desiredOption
+        );
+
+      if (existing) {
+        await client.query(
+          `
+            UPDATE public.modifier_options
+            SET
+              name = $1,
+              price_delta_cents = $2,
+              sort_order = $3,
+              active = TRUE
+            WHERE id = $4
+              AND group_id = $5
+          `,
+          [
+            desiredOption.name,
+            desiredOption
+              .priceDeltaCents,
+            desiredOption.sortOrder,
+            existing.id,
+            group.id,
+          ]
+        );
+
+        continue;
+      }
+
+      await client.query(
+        `
+          INSERT INTO public.modifier_options (
+            group_id,
+            name,
+            price_delta_cents,
+            sort_order,
+            active
+          )
+          VALUES (
+            $1, $2, $3, $4, TRUE
+          )
+        `,
+        [
+          group.id,
+          desiredOption.name,
+          desiredOption
+            .priceDeltaCents,
+          desiredOption.sortOrder,
+        ]
+      );
+
+      state =
+        await loadMenuState(
+          client,
+          restaurantId
+        );
+    }
+  }
+}
+
+async function applyItemGroupLinks(
+  client,
+  restaurantId
+) {
+  let state =
+    await loadMenuState(
+      client,
+      restaurantId
+    );
+
+  for (
+    const desiredItem
+    of MENU.items
+  ) {
+    const category =
+      findCategory(
+        state,
+        desiredItem.category
+      );
+
+    if (!category) {
+      throw new Error(
+        `LINK_CATEGORY_NOT_FOUND: ${desiredItem.category}`
+      );
+    }
+
+    const item =
+      findItem(
+        state,
+        category.id,
+        desiredItem.name
+      );
+
+    if (!item) {
+      throw new Error(
+        `LINK_ITEM_NOT_FOUND: ${desiredItem.name}`
+      );
+    }
+
+    for (
+      let index = 0;
+      index <
+        desiredItem
+          .modifierGroups
+          .length;
+      index += 1
+    ) {
+      const groupName =
+        desiredItem
+          .modifierGroups[
+            index
+          ];
+
+      const group =
+        findGroup(
+          state,
+          groupName
+        );
+
+      if (!group) {
+        throw new Error(
+          `LINK_GROUP_NOT_FOUND: ${groupName}`
+        );
+      }
+
+      const sortOrder =
+        index + 1;
+
+      const existing =
+        state.links.find(
+          (row) =>
+            row.menu_item_id ===
+              item.id &&
+            row.group_id ===
+              group.id
+        );
+
+      if (existing) {
+        await client.query(
+          `
+            UPDATE public.menu_item_modifier_groups
+            SET sort_order = $1
+            WHERE menu_item_id = $2
+              AND group_id = $3
+          `,
+          [
+            sortOrder,
+            item.id,
+            group.id,
+          ]
+        );
+
+        continue;
+      }
+
+      await client.query(
+        `
+          INSERT INTO public.menu_item_modifier_groups (
+            menu_item_id,
+            group_id,
+            sort_order
+          )
+          VALUES ($1, $2, $3)
+        `,
+        [
+          item.id,
+          group.id,
+          sortOrder,
+        ]
+      );
+
+      state =
+        await loadMenuState(
+          client,
+          restaurantId
+        );
+    }
+  }
+}
+
+function verifyAppliedMenu(
+  state
+) {
+  const failures = [];
+
+  for (
+    const desired
+    of MENU.categories
+  ) {
+    const category =
+      findCategory(
+        state,
+        desired.name
+      );
+
+    if (!category) {
+      failures.push(
+        `CATEGORY_MISSING:${desired.name}`
+      );
+      continue;
+    }
+
+    if (
+      Number(
+        category.sort_order
+      ) !== desired.sortOrder ||
+      category.active !== true
+    ) {
+      failures.push(
+        `CATEGORY_MISMATCH:${desired.name}`
+      );
+    }
+  }
+
+  for (
+    const desired
+    of MENU.items
+  ) {
+    const category =
+      findCategory(
+        state,
+        desired.category
+      );
+
+    if (!category) {
+      failures.push(
+        `ITEM_CATEGORY_MISSING:${desired.name}`
+      );
+      continue;
+    }
+
+    const item =
+      findItem(
+        state,
+        category.id,
+        desired.name
+      );
+
+    if (!item) {
+      failures.push(
+        `ITEM_MISSING:${desired.name}`
+      );
+      continue;
+    }
+
+    if (
+      (item.description ??
+        null) !==
+        desired.description ||
+      Number(
+        item.price_cents
+      ) !==
+        desired.priceCents ||
+      Number(
+        item.sort_order
+      ) !==
+        desired.sortOrder ||
+      item.active !==
+        desired.active ||
+      item.available !==
+        desired.available
+    ) {
+      failures.push(
+        `ITEM_MISMATCH:${desired.name}`
+      );
+    }
+  }
+
+  for (
+    let index = 0;
+    index <
+      MENU.modifierGroups.length;
+    index += 1
+  ) {
+    const desired =
+      MENU.modifierGroups[
+        index
+      ];
+
+    const group =
+      findGroup(
+        state,
+        desired.name
+      );
+
+    if (!group) {
+      failures.push(
+        `GROUP_MISSING:${desired.name}`
+      );
+      continue;
+    }
+
+    if (
+      Number(
+        group.min_select
+      ) !== desired.minSelect ||
+      Number(
+        group.max_select
+      ) !== desired.maxSelect ||
+      group.required !==
+        desired.required ||
+      Number(
+        group.sort_order
+      ) !== index + 1 ||
+      group.active !== true
+    ) {
+      failures.push(
+        `GROUP_MISMATCH:${desired.name}`
+      );
+    }
+
+    for (
+      const desiredOption
+      of desired.options
+    ) {
+      const option =
+        state.options.find(
+          (row) =>
+            row.group_id ===
+              group.id &&
+            normalize(row.name) ===
+              normalize(
+                desiredOption.name
+              )
+        );
+
+      if (!option) {
+        failures.push(
+          `OPTION_MISSING:${desired.name}/${desiredOption.name}`
+        );
+        continue;
+      }
+
+      if (
+        Number(
+          option.price_delta_cents
+        ) !==
+          desiredOption
+            .priceDeltaCents ||
+        Number(
+          option.sort_order
+        ) !==
+          desiredOption
+            .sortOrder ||
+        option.active !== true
+      ) {
+        failures.push(
+          `OPTION_MISMATCH:${desired.name}/${desiredOption.name}`
+        );
+      }
+    }
+  }
+
+  for (
+    const desiredItem
+    of MENU.items
+  ) {
+    const category =
+      findCategory(
+        state,
+        desiredItem.category
+      );
+
+    if (!category) {
+      continue;
+    }
+
+    const item =
+      findItem(
+        state,
+        category.id,
+        desiredItem.name
+      );
+
+    if (!item) {
+      continue;
+    }
+
+    for (
+      let index = 0;
+      index <
+        desiredItem
+          .modifierGroups
+          .length;
+      index += 1
+    ) {
+      const groupName =
+        desiredItem
+          .modifierGroups[
+            index
+          ];
+
+      const group =
+        findGroup(
+          state,
+          groupName
+        );
+
+      if (!group) {
+        continue;
+      }
+
+      const link =
+        state.links.find(
+          (row) =>
+            row.menu_item_id ===
+              item.id &&
+            row.group_id ===
+              group.id
+        );
+
+      if (!link) {
+        failures.push(
+          `LINK_MISSING:${desiredItem.name}/${groupName}`
+        );
+        continue;
+      }
+
+      if (
+        Number(
+          link.sort_order
+        ) !==
+          index + 1
+      ) {
+        failures.push(
+          `LINK_MISMATCH:${desiredItem.name}/${groupName}`
+        );
+      }
+    }
+  }
+
+  if (failures.length) {
+    throw new Error(
+      [
+        'POST_WRITE_VERIFICATION_FAILED',
+        ...failures,
+      ].join('\n')
+    );
+  }
+}
+
+async function applyMenu(
+  pool
+) {
+  assertApplyGuard();
+
+  const client =
+    await pool.connect();
+
+  let transactionOpen =
+    false;
+
+  try {
+    console.log(
+      '=============================================='
+    );
+    console.log(
+      'STATS FOOD MENU IMPORT — TRANSACTIONAL APPLY'
+    );
+    console.log(
+      '=============================================='
+    );
+    console.log(
+      `restaurant=${RESTAURANT_ID}`
+    );
+    console.log(
+      `confirmed_restaurant=${CONFIRMED_RESTAURANT_ID}`
+    );
+    console.log(
+      'automatic_deactivation=DISABLED'
+    );
+    console.log(
+      'delete_operations=DISABLED'
+    );
+    console.log();
+
+    const restaurantResult =
+      await client.query(
+        `
+          SELECT id, name, active
+          FROM public.restaurants
+          WHERE id = $1
+        `,
+        [RESTAURANT_ID]
+      );
+
+    if (
+      restaurantResult.rowCount !==
+      1
+    ) {
+      throw new Error(
+        `RESTAURANT_NOT_FOUND:${RESTAURANT_ID}`
+      );
+    }
+
+    if (
+      restaurantResult.rows[0]
+        .active !== true
+    ) {
+      throw new Error(
+        `RESTAURANT_INACTIVE:${RESTAURANT_ID}`
+      );
+    }
+
+    console.log(
+      `Restaurant: ${restaurantResult.rows[0].name}`
+    );
+
+    await client.query('BEGIN');
+    transactionOpen = true;
+
+    console.log('BEGIN=OK');
+
+    await applyCategories(
+      client,
+      RESTAURANT_ID
+    );
+    console.log(
+      'CATEGORIES=OK'
+    );
+
+    await applyItems(
+      client,
+      RESTAURANT_ID
+    );
+    console.log(
+      'ITEMS=OK'
+    );
+
+    await applyModifierGroups(
+      client,
+      RESTAURANT_ID
+    );
+    console.log(
+      'MODIFIER_GROUPS=OK'
+    );
+
+    await applyModifierOptions(
+      client,
+      RESTAURANT_ID
+    );
+    console.log(
+      'MODIFIER_OPTIONS=OK'
+    );
+
+    await applyItemGroupLinks(
+      client,
+      RESTAURANT_ID
+    );
+    console.log(
+      'ITEM_GROUP_LINKS=OK'
+    );
+
+    const finalState =
+      await loadMenuState(
+        client,
+        RESTAURANT_ID
+      );
+
+    verifyAppliedMenu(
+      finalState
+    );
+
+    console.log(
+      'POST_WRITE_VERIFICATION=PASS'
+    );
+
+    await client.query(
+      'COMMIT'
+    );
+
+    transactionOpen = false;
+
+    console.log('COMMIT=OK');
+    console.log(
+      'APPLY COMPLETE — TRANSACTION COMMITTED'
+    );
+  } catch (error) {
+    if (transactionOpen) {
+      try {
+        await client.query(
+          'ROLLBACK'
+        );
+
+        console.error(
+          'ROLLBACK=OK'
+        );
+      } catch (
+        rollbackError
+      ) {
+        console.error(
+          'ROLLBACK_FAILED',
+          rollbackError.message
+        );
+      }
+    }
+
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 async function main() {
   const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
   });
+
+  if (APPLY) {
+    try {
+      await applyMenu(pool);
+    } finally {
+      await pool.end();
+    }
+
+    return;
+  }
 
   try {
     console.log('==============================================');
