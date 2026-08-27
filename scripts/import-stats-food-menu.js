@@ -90,41 +90,38 @@ async function loadMenuState(
   client,
   restaurantId
 ) {
-  const [
-    categories,
-    items,
-    groups,
-    options,
-    links,
-  ] = await Promise.all([
-    client.query(
+  const categories =
+    await client.query(
       `
         SELECT *
         FROM public.menu_categories
         WHERE restaurant_id = $1
       `,
       [restaurantId]
-    ),
+    );
 
-    client.query(
+  const items =
+    await client.query(
       `
         SELECT *
         FROM public.menu_items
         WHERE restaurant_id = $1
       `,
       [restaurantId]
-    ),
+    );
 
-    client.query(
+  const groups =
+    await client.query(
       `
         SELECT *
         FROM public.modifier_groups
         WHERE restaurant_id = $1
       `,
       [restaurantId]
-    ),
+    );
 
-    client.query(
+  const options =
+    await client.query(
       `
         SELECT mo.*
         FROM public.modifier_options mo
@@ -133,9 +130,10 @@ async function loadMenuState(
         WHERE mg.restaurant_id = $1
       `,
       [restaurantId]
-    ),
+    );
 
-    client.query(
+  const links =
+    await client.query(
       `
         SELECT
           rel.menu_item_id,
@@ -147,8 +145,7 @@ async function loadMenuState(
         WHERE mi.restaurant_id = $1
       `,
       [restaurantId]
-    ),
-  ]);
+    );
 
   return {
     categories: categories.rows,
@@ -373,22 +370,18 @@ async function applyItems(
           SET
             category_id = $1,
             name = $2,
-            description = $3,
-            price_cents = $4,
-            tax_rate_bps = $5,
-            sort_order = $6,
-            active = $7,
-            available = $8
-          WHERE id = $9
-            AND restaurant_id = $10
+            price_cents = $3,
+            tax_rate_bps = $4,
+            active = $5,
+            available = $6
+          WHERE id = $7
+            AND restaurant_id = $8
         `,
         [
           category.id,
           desired.name,
-          desired.description,
           desired.priceCents,
           existing.tax_rate_bps,
-          desired.sortOrder,
           desired.active,
           desired.available,
           existing.id,
@@ -405,26 +398,22 @@ async function applyItems(
           restaurant_id,
           category_id,
           name,
-          description,
           price_cents,
           tax_rate_bps,
-          sort_order,
           active,
           available
         )
         VALUES (
-          $1, $2, $3, $4, $5,
-          $6, $7, $8, $9
+          $1, $2, $3, $4,
+          $5, $6, $7
         )
       `,
       [
         restaurantId,
         category.id,
         desired.name,
-        desired.description,
         desired.priceCents,
         newItemTaxRateBps,
-        desired.sortOrder,
         desired.active,
         desired.available,
       ]
@@ -809,17 +798,10 @@ function verifyAppliedMenu(
     }
 
     if (
-      (item.description ??
-        null) !==
-        desired.description ||
       Number(
         item.price_cents
       ) !==
         desired.priceCents ||
-      Number(
-        item.sort_order
-      ) !==
-        desired.sortOrder ||
       item.active !==
         desired.active ||
       item.available !==
