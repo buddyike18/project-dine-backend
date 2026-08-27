@@ -141,6 +141,7 @@ module.exports = {
       active: true,
       available: true,
       modifierGroups: [
+        'House Salad Dressing',
         'Salad Protein',
       ],
     },
@@ -584,6 +585,20 @@ module.exports = {
       ],
     },
     {
+      name: 'House Salad Dressing',
+      minSelect: 1,
+      maxSelect: 1,
+      required: true,
+      options: [
+        { name: 'Ranch', priceDeltaCents: 0, sortOrder: 1 },
+        { name: 'Blue Cheese', priceDeltaCents: 0, sortOrder: 2 },
+        { name: 'Balsamic Vinaigrette', priceDeltaCents: 0, sortOrder: 3 },
+        { name: 'Honey Mustard', priceDeltaCents: 0, sortOrder: 4 },
+        { name: 'Caesar', priceDeltaCents: 0, sortOrder: 5 },
+        { name: 'Toasted Sesame', priceDeltaCents: 0, sortOrder: 6 },
+      ],
+    },
+    {
       name: 'Salad Protein',
       minSelect: 0,
       maxSelect: 1,
@@ -770,12 +785,8 @@ module.exports = {
 
   unresolved: [
     {
-      item: 'House Salad',
-      rule: 'Dressing choice is required by the published menu, but the dressing options are not listed.',
-    },
-    {
       item: 'Impossible Burger',
-      rule: 'Customer may choose cheese, but the published menu does not list the available cheese options.',
+      rule: 'Current published menu requires a cheese choice but does not identify the available cheeses. Initial import intentionally omits this modifier rather than inventing options.',
     },
   ],
 };
