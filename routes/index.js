@@ -8,6 +8,7 @@ module.exports = (pool, verifyToken, admin, logEvent) => {
   );
 
   router.use('/menu', require('./menu')(pool, verifyToken));
+  router.use('/restaurants', require('./restaurants')(pool));
   router.use(
     '/table-sessions',
     require('./tableSessions')(pool, verifyToken)
