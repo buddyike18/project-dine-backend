@@ -4,6 +4,8 @@ const express = require('express');
 const { resolveActor } = require('../../middleware/resolveActor');
 const config = require('../../config');
 
+const { calculateOrderTaxCents } = require('../../lib/orderTax');
+
 module.exports = function buildOrdersRouter({ pool, verifyToken, handleError }) {
   const router = express.Router();
 
@@ -560,7 +562,8 @@ module.exports = function buildOrdersRouter({ pool, verifyToken, handleError }) 
             'hydrate canonical menu item',
             `SELECT mi.id,
                     mi.name,
-                    mi.price_cents
+                    mi.price_cents,
+                    mi.tax_rate_bps
              FROM menu_items mi
              LEFT JOIN menu_categories mc
                ON mc.id = mi.category_id
@@ -700,6 +703,7 @@ module.exports = function buildOrdersRouter({ pool, verifyToken, handleError }) 
             unit_price_cents_snapshot: menuItemRow.price_cents,
             quantity: item.quantity,
             modifier_total_cents: modifierTotalCents,
+            tax_rate_bps: Number(menuItemRow.tax_rate_bps || 0),
             modifiers: normalizedModifiers,
           });
         }
@@ -711,7 +715,7 @@ module.exports = function buildOrdersRouter({ pool, verifyToken, handleError }) 
               it.quantity,
           0
         );
-        const tax_cents = 0;
+        const tax_cents = calculateOrderTaxCents(normalizedItems);
         const tip_cents = 0;
         const total_cents = subtotal_cents + tax_cents + tip_cents;
         const paid_cents = 0;
