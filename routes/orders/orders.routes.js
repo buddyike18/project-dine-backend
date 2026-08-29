@@ -4,10 +4,9 @@ const express = require('express');
 const { resolveActor } = require('../../middleware/resolveActor');
 const config = require('../../config');
 
-const { calculateOrderTaxCents } = require('../../lib/orderTax');
 const {
-  calculateAutomaticGratuityCents,
-} = require('../../lib/orderGratuity');
+  calculateCanonicalOrderPricing,
+} = require('../../lib/orderPricing');
 
 module.exports = function buildOrdersRouter({ pool, verifyToken, handleError }) {
   const router = express.Router();
@@ -241,6 +240,89 @@ module.exports = function buildOrdersRouter({ pool, verifyToken, handleError }) 
       handleErrorWithStatus(res, err);
     }
   });
+
+  // Quote order pricing (read-only, pre-payment)
+  router.post(
+    '/quote',
+    validate({
+      restaurant_id: (v) => v === undefined || isUuid(v),
+      restaurantId: (v) => v === undefined || isUuid(v),
+      items: (v) =>
+        Array.isArray(v) &&
+        v.length > 0 &&
+        v.every(
+          (it) =>
+            it &&
+            isUuid(it.menu_item_id) &&
+            Number.isInteger(it.quantity) &&
+            it.quantity > 0 &&
+            (it.modifiers === undefined ||
+              (Array.isArray(it.modifiers) &&
+                it.modifiers.every(
+                  (group) =>
+                    group &&
+                    isUuid(group.group_id) &&
+                    Array.isArray(group.option_ids) &&
+                    group.option_ids.every((optionId) => isUuid(optionId))
+                )))
+        ),
+    }),
+    verifyToken,
+    async (req, res) => {
+      try {
+        const restaurantId =
+          req.body?.restaurant_id || req.body?.restaurantId;
+
+        if (!restaurantId || !isUuid(restaurantId)) {
+          const err = new Error('Invalid restaurant id');
+          err.status = 400;
+          throw err;
+        }
+
+        const items = Array.isArray(req.body?.items)
+          ? req.body.items
+          : [];
+
+        const query = async (step, sql, params) => {
+          try {
+            return await pool.query(sql, params);
+          } catch (err) {
+            req.logEvent?.('error', {
+              at: 'orders.routes',
+              event: 'order.quote_step_failed',
+              requestId: req.requestId || null,
+              step,
+              failureType: isDbUnavailableErr(err)
+                ? 'database_unavailable'
+                : 'database_operation_failed',
+            });
+            throw err;
+          }
+        };
+
+        const pricing = await calculateCanonicalOrderPricing({
+          query,
+          restaurantId,
+          items,
+        });
+
+        return res.status(200).json({
+          quote: {
+            subtotal_cents: pricing.subtotal_cents,
+            tax_cents: pricing.tax_cents,
+            tip_cents: pricing.tip_cents,
+            total_cents: pricing.total_cents,
+            automatic_gratuity_enabled:
+              pricing.automatic_gratuity_enabled,
+            automatic_gratuity_bps:
+              pricing.automatic_gratuity_bps,
+          },
+        });
+      } catch (err) {
+        return handleErrorWithStatus(res, err);
+      }
+    }
+  );
 
   // Create order (customer checkout)
   router.post(
@@ -556,196 +638,18 @@ module.exports = function buildOrdersRouter({ pool, verifyToken, handleError }) 
           }
         }
 
-        const restaurantSettingsResult = await q(
-          'load restaurant pricing settings',
-          `SELECT
-             automatic_gratuity_enabled,
-             automatic_gratuity_bps
-           FROM public.restaurants
-           WHERE id = $1
-             AND active = TRUE
-           LIMIT 1`,
-          [restaurantIdFinal]
-        );
-
-        const restaurantSettings =
-          restaurantSettingsResult.rows?.[0];
-
-        if (!restaurantSettings) {
-          const err = new Error('Restaurant not found');
-          err.status = 404;
-          throw err;
-        }
-
-        const normalizedItems = [];
-
-        for (const item of items) {
-          const menuItemId = item.menu_item_id;
-
-          const menuItemResult = await q(
-            'hydrate canonical menu item',
-            `SELECT mi.id,
-                    mi.name,
-                    mi.price_cents,
-                    mi.tax_rate_bps
-             FROM menu_items mi
-             LEFT JOIN menu_categories mc
-               ON mc.id = mi.category_id
-              AND mc.active = true
-             WHERE mi.id = $1
-               AND mi.restaurant_id = $2
-               AND mi.active = true
-               AND mi.available = true
-               AND (
-                 mi.category_id IS NULL
-                 OR mc.id IS NOT NULL
-               )
-             LIMIT 1`,
-            [menuItemId, restaurantIdFinal]
-          );
-
-          const menuItemRow = menuItemResult.rows?.[0];
-
-          if (!menuItemRow) {
-            const err = new Error('Menu item is unavailable or invalid');
-            err.status = 400;
-            throw err;
-          }
-
-          const linkedGroupsResult = await q(
-            'load linked modifier groups',
-            `SELECT mg.id,
-                    mg.name,
-                    mg.min_select,
-                    mg.max_select
-             FROM menu_item_modifier_groups mimg
-             JOIN modifier_groups mg
-               ON mg.id = mimg.group_id
-             WHERE mimg.menu_item_id = $1
-               AND mg.restaurant_id = $2
-               AND mg.active = true
-             ORDER BY COALESCE(mimg.sort_order, mg.sort_order) ASC,
-                      mg.name ASC`,
-            [menuItemId, restaurantIdFinal]
-          );
-
-          const linkedGroups = linkedGroupsResult.rows || [];
-          const linkedGroupMap = new Map(
-            linkedGroups.map((group) => [group.id, group])
-          );
-
-          const submittedGroups = Array.isArray(item.modifiers)
-            ? item.modifiers
-            : [];
-
-          const submittedGroupMap = new Map();
-
-          for (const submittedGroup of submittedGroups) {
-            if (submittedGroupMap.has(submittedGroup.group_id)) {
-              const err = new Error('Duplicate modifier group selection');
-              err.status = 400;
-              throw err;
-            }
-
-            submittedGroupMap.set(submittedGroup.group_id, submittedGroup);
-
-            if (!linkedGroupMap.has(submittedGroup.group_id)) {
-              const err = new Error('Invalid modifier group for menu item');
-              err.status = 400;
-              throw err;
-            }
-          }
-
-          const normalizedModifiers = [];
-          let modifierTotalCents = 0;
-
-          for (const linkedGroup of linkedGroups) {
-            const submittedGroup = submittedGroupMap.get(linkedGroup.id);
-            const optionIds = submittedGroup?.option_ids || [];
-            const selectionCount = optionIds.length;
-
-            if (
-              selectionCount < linkedGroup.min_select ||
-              selectionCount > linkedGroup.max_select
-            ) {
-              const err = new Error('Invalid modifier selection count');
-              err.status = 400;
-              throw err;
-            }
-
-            const uniqueOptionIds = new Set(optionIds);
-
-            if (uniqueOptionIds.size !== optionIds.length) {
-              const err = new Error('Duplicate modifier option selection');
-              err.status = 400;
-              throw err;
-            }
-
-            if (optionIds.length === 0) {
-              continue;
-            }
-
-            const optionsResult = await q(
-              'load canonical modifier options',
-              `SELECT id,
-                      group_id,
-                      name,
-                      price_delta_cents
-               FROM modifier_options
-               WHERE group_id = $1
-                 AND active = true
-                 AND id = ANY($2::uuid[])
-               ORDER BY id ASC`,
-              [linkedGroup.id, optionIds]
-            );
-
-            const optionRows = optionsResult.rows || [];
-
-            if (optionRows.length !== optionIds.length) {
-              const err = new Error('Invalid modifier option for group');
-              err.status = 400;
-              throw err;
-            }
-
-            for (const optionRow of optionRows) {
-              modifierTotalCents += optionRow.price_delta_cents;
-
-              normalizedModifiers.push({
-                group_id: linkedGroup.id,
-                option_id: optionRow.id,
-                group_name_snapshot: linkedGroup.name,
-                option_name_snapshot: optionRow.name,
-                price_delta_cents_snapshot: optionRow.price_delta_cents,
-                quantity: 1,
-              });
-            }
-          }
-
-          normalizedItems.push({
-            menu_item_id: menuItemRow.id,
-            name_snapshot: menuItemRow.name,
-            unit_price_cents_snapshot: menuItemRow.price_cents,
-            quantity: item.quantity,
-            modifier_total_cents: modifierTotalCents,
-            tax_rate_bps: Number(menuItemRow.tax_rate_bps || 0),
-            modifiers: normalizedModifiers,
-          });
-        }
-
-        const subtotal_cents = normalizedItems.reduce(
-          (sum, it) =>
-            sum +
-            (it.unit_price_cents_snapshot + it.modifier_total_cents) *
-              it.quantity,
-          0
-        );
-        const tax_cents = calculateOrderTaxCents(normalizedItems);
-        const tip_cents = calculateAutomaticGratuityCents(
+        const {
+          normalizedItems,
           subtotal_cents,
-          restaurantSettings.automatic_gratuity_enabled === true,
-          Number(restaurantSettings.automatic_gratuity_bps || 0)
-        );
-        const total_cents = subtotal_cents + tax_cents + tip_cents;
+          tax_cents,
+          tip_cents,
+          total_cents,
+        } = await calculateCanonicalOrderPricing({
+          query: q,
+          restaurantId: restaurantIdFinal,
+          items,
+        });
+
         const paid_cents = 0;
 
         const orderResult = await q(
