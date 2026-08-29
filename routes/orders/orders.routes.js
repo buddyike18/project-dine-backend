@@ -5,6 +5,9 @@ const { resolveActor } = require('../../middleware/resolveActor');
 const config = require('../../config');
 
 const { calculateOrderTaxCents } = require('../../lib/orderTax');
+const {
+  calculateAutomaticGratuityCents,
+} = require('../../lib/orderGratuity');
 
 module.exports = function buildOrdersRouter({ pool, verifyToken, handleError }) {
   const router = express.Router();
@@ -553,6 +556,27 @@ module.exports = function buildOrdersRouter({ pool, verifyToken, handleError }) 
           }
         }
 
+        const restaurantSettingsResult = await q(
+          'load restaurant pricing settings',
+          `SELECT
+             automatic_gratuity_enabled,
+             automatic_gratuity_bps
+           FROM public.restaurants
+           WHERE id = $1
+             AND active = TRUE
+           LIMIT 1`,
+          [restaurantIdFinal]
+        );
+
+        const restaurantSettings =
+          restaurantSettingsResult.rows?.[0];
+
+        if (!restaurantSettings) {
+          const err = new Error('Restaurant not found');
+          err.status = 404;
+          throw err;
+        }
+
         const normalizedItems = [];
 
         for (const item of items) {
@@ -716,7 +740,11 @@ module.exports = function buildOrdersRouter({ pool, verifyToken, handleError }) 
           0
         );
         const tax_cents = calculateOrderTaxCents(normalizedItems);
-        const tip_cents = 0;
+        const tip_cents = calculateAutomaticGratuityCents(
+          subtotal_cents,
+          restaurantSettings.automatic_gratuity_enabled === true,
+          Number(restaurantSettings.automatic_gratuity_bps || 0)
+        );
         const total_cents = subtotal_cents + tax_cents + tip_cents;
         const paid_cents = 0;
 
