@@ -14,7 +14,8 @@
     "bootstrap:restaurant": "node scripts/bootstrap-restaurant.js",
     "bootstrap:manager": "node scripts/bootstrap-manager.js",
     "bootstrap:tables": "node scripts/bootstrap-tables.js",
-    "bootstrap:menu": "node scripts/bootstrap-menu.js"
+    "bootstrap:menu": "node scripts/bootstrap-menu.js",
+    "bootstrap:bar-chairs": "node scripts/bootstrap-bar-chairs.js"
   },
   "keywords": [],
   "author": "",
