@@ -579,7 +579,7 @@ module.exports = function barRoutes(pool, verifyToken) {
              WHERE check_id = $1
                AND restaurant_id = $2
                AND status <> 'CANCELLED'
-             ORDER BY created_at ASC, id ASC
+             ORDER BY opened_at ASC, id ASC
              FOR UPDATE`,
             [
               checkId,
