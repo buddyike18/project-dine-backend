@@ -36,7 +36,7 @@ module.exports = function buildOrdersRouter({ pool, verifyToken, handleError }) 
 
   const isProd = String(config.app.nodeEnv || '').toLowerCase() === 'production';
 
-  const stableItemHashPayload = (restaurantId, tableId, items) => {
+  const stableItemHashPayload = (restaurantId, tableId, checkId, items) => {
     const norm = (items || []).map((it) => {
       const modifiers = Array.isArray(it.modifiers)
         ? it.modifiers.map((group) => ({
@@ -66,11 +66,17 @@ module.exports = function buildOrdersRouter({ pool, verifyToken, handleError }) 
       return a.quantity - b.quantity;
     });
 
-    return JSON.stringify({
+    const payload = {
       restaurantId,
       tableId: tableId || null,
       items: norm,
-    });
+    };
+
+    if (checkId) {
+      payload.checkId = checkId;
+    }
+
+    return JSON.stringify(payload);
   };
 
   // Phase 7.1 — Role scope helpers (route-level)
@@ -531,14 +537,90 @@ module.exports = function buildOrdersRouter({ pool, verifyToken, handleError }) 
             ? String(tableIdRaw).trim()
             : null;
 
+      const checkIdRaw = req.body?.check_id;
+      const checkId =
+        checkIdRaw === undefined ||
+        checkIdRaw === null ||
+        String(checkIdRaw).trim() === ''
+          ? null
+          : String(checkIdRaw).trim();
+
+      if (
+        checkId &&
+        !isUuid(checkId)
+      ) {
+        return res.status(400).json({
+          error: 'Invalid check_id.',
+        });
+      }
+
+      if (
+        tableId &&
+        checkId
+      ) {
+        return res.status(400).json({
+          error:
+            'Order cannot include both table_id and check_id',
+        });
+      }
+
+      if (
+        orderOrigin === 'CUSTOMER' &&
+        checkId
+      ) {
+        return res.status(403).json({
+          error:
+            'Customer orders cannot belong to a bar check.',
+        });
+      }
+
       try {
         await q('BEGIN', 'BEGIN');
+
+        if (checkId) {
+          const checkResult = await q(
+            'lock bar check',
+            `SELECT
+               id,
+               restaurant_id,
+               status,
+               check_type
+             FROM checks
+             WHERE id = $1
+               AND restaurant_id = $2
+               AND check_type = 'BAR'
+             FOR UPDATE`,
+            [
+              checkId,
+              restaurantIdFinal,
+            ]
+          );
+
+          if (checkResult.rows.length !== 1) {
+            await q('ROLLBACK', 'ROLLBACK');
+
+            return res.status(404).json({
+              error: 'Bar check not found.',
+            });
+          }
+
+          if (
+            checkResult.rows[0].status !== 'OPEN'
+          ) {
+            await q('ROLLBACK', 'ROLLBACK');
+
+            return res.status(409).json({
+              error: 'Bar check is not open.',
+            });
+          }
+        }
 
         // Phase 40K — Transactional order-creation idempotency.
         if (idempotencyKey) {
           const signature = stableItemHashPayload(
             restaurantIdFinal,
             tableId,
+            checkId,
             items
           );
 
@@ -657,6 +739,7 @@ module.exports = function buildOrdersRouter({ pool, verifyToken, handleError }) 
           `INSERT INTO orders (
              restaurant_id,
              table_id,
+             check_id,
              created_by_user_id,
              order_origin,
              subtotal_cents,
@@ -666,11 +749,12 @@ module.exports = function buildOrdersRouter({ pool, verifyToken, handleError }) 
              paid_cents,
              status,
              opened_at
-           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'OPEN', NOW())
+           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'OPEN', NOW())
            RETURNING *`,
           [
             restaurantIdFinal,
             tableId,
+            checkId,
             createdByUserIdForOrder,
             orderOrigin,
             subtotal_cents,
@@ -748,6 +832,7 @@ module.exports = function buildOrdersRouter({ pool, verifyToken, handleError }) 
               signature: stableItemHashPayload(
                 restaurantIdFinal,
                 tableId,
+                checkId,
                 items
               ),
             }

@@ -450,7 +450,32 @@ async function getOrderEventsScoped(pool, orderId, restaurantId) {
   return result.rows;
 }
 
+async function listForCheckScoped(pool, checkId, ctx) {
+  const result = await pool.query(
+    `SELECT o.*,
+            COALESCE(json_agg(json_build_object(
+              'menu_item_id', oi.menu_item_id,
+              'name', oi.name_snapshot,
+              'quantity', oi.quantity,
+              'unit_price_cents', oi.unit_price_cents_snapshot,
+              'line_total_cents', oi.line_total_cents
+            )) FILTER (WHERE oi.id IS NOT NULL), '[]') AS items
+       FROM orders o
+       LEFT JOIN order_items oi ON o.id = oi.order_id
+      WHERE o.restaurant_id = $1
+        AND o.check_id = $2
+        AND o.status <> 'CANCELLED'
+      GROUP BY o.id
+      ORDER BY o.opened_at DESC, o.id DESC`,
+    [ctx.restaurantId, checkId]
+  );
+
+  return result.rows;
+}
+
+
 module.exports = {
+  listForCheckScoped,
   getOrderByIdWithItems,
   listActiveScoped,
   listActiveForTableScoped,
