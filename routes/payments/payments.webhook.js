@@ -1756,6 +1756,20 @@ function createPaymentsWebhookRouter(pool) {
         'payment_webhook_failed',
         {
           reason,
+          error_message:
+            error?.message || null,
+          error_code:
+            error?.code || null,
+          error_constraint:
+            error?.constraint || null,
+          error_table:
+            error?.table || null,
+          error_column:
+            error?.column || null,
+          error_detail:
+            error?.detail || null,
+          error_routine:
+            error?.routine || null,
         }
       );
 
