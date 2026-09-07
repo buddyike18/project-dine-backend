@@ -5,6 +5,10 @@
 // This route must receive the original request body as a Buffer through
 // express.raw({ type: 'application/json' }).
 
+const {
+  settleBarCheckPayment,
+} = require('../../lib/barCheckSettlement');
+
 const STRIPE_STATUS_TO_DB = {
   created: 'REQUIRES_PAYMENT_METHOD',
   requires_payment_method: 'REQUIRES_PAYMENT_METHOD',
@@ -88,6 +92,7 @@ async function findPaymentByIntent(
          id,
          restaurant_id,
          order_id,
+         check_id,
          payment_intent_id,
          stripe_payment_intent_id,
          status,
@@ -714,6 +719,167 @@ async function reconcileSucceededPayment(
       client,
       paymentIntentId
     );
+
+  if (
+    payment.check_id &&
+    !payment.order_id
+  ) {
+    const paymentAmountCents =
+      Number(payment.amount_cents);
+
+    if (
+      !Number.isInteger(paymentAmountCents) ||
+      paymentAmountCents <= 0
+    ) {
+      throw classifiedError(
+        'CHECK_PAYMENT_AMOUNT_INVALID'
+      );
+    }
+
+    if (
+      !Number.isInteger(stripeAmountCents) ||
+      stripeAmountCents <= 0 ||
+      stripeAmountCents !== paymentAmountCents
+    ) {
+      throw classifiedError(
+        'CHECK_PAYMENT_STRIPE_AMOUNT_MISMATCH'
+      );
+    }
+
+    const existingAllocation =
+      await client.query(
+        `SELECT
+           payment_id,
+           order_id,
+           amount_cents
+         FROM payment_order_allocations
+         WHERE payment_id = $1
+         ORDER BY created_at ASC
+         LIMIT 1
+         FOR UPDATE`,
+        [payment.id]
+      );
+
+    if (existingAllocation.rowCount > 0) {
+      return {
+        deduplicated: true,
+        payment,
+        relationship: {
+          paymentId:
+            payment.id,
+          checkId:
+            payment.check_id,
+          restaurantId:
+            payment.restaurant_id,
+          paymentAmountCents,
+          stripeAmountCents,
+        },
+        effects: {
+          eventType,
+          paymentIntentId,
+          paymentId:
+            payment.id,
+          orderId: null,
+          checkId:
+            payment.check_id,
+          restaurantId:
+            payment.restaurant_id,
+          fromStatus:
+            payment.status || null,
+          toStatus:
+            payment.status || null,
+          monotonicIgnored: true,
+          paymentRecorded: false,
+          orderPaid: false,
+          orderSent: false,
+          statusChangedRecorded: false,
+          ordersSettled: 0,
+          amountPaidCents: 0,
+          amountOwedCents: null,
+          paymentState: null,
+          deduplicated: true,
+          reason:
+            'CHECK_PAYMENT_ALREADY_ALLOCATED',
+        },
+      };
+    }
+
+    const paymentUpdate =
+      await updatePaymentStatus(
+        client,
+        payment,
+        'SUCCEEDED',
+        stripeAmountCents
+      );
+
+    const settlement =
+      await settleBarCheckPayment({
+        client,
+        restaurantId:
+          payment.restaurant_id,
+        checkId:
+          payment.check_id,
+        paymentMethod: 'card',
+        actor: null,
+        actorType:
+          'PAYMENT_PROVIDER',
+        paymentId:
+          payment.id,
+        paymentIntentId,
+        provider: 'STRIPE',
+        expectedAmountCents:
+          stripeAmountCents,
+      });
+
+    return {
+      deduplicated:
+        settlement.is_noop,
+      payment,
+      relationship: {
+        paymentId:
+          payment.id,
+        checkId:
+          payment.check_id,
+        restaurantId:
+          payment.restaurant_id,
+        paymentAmountCents,
+        stripeAmountCents,
+      },
+      effects: {
+        eventType,
+        paymentIntentId,
+        paymentId:
+          payment.id,
+        orderId: null,
+        checkId:
+          payment.check_id,
+        restaurantId:
+          payment.restaurant_id,
+        fromStatus:
+          payment.status || null,
+        toStatus:
+          paymentUpdate.status,
+        monotonicIgnored:
+          !paymentUpdate.updated,
+        paymentRecorded:
+          settlement.amount_paid_cents > 0,
+        orderPaid:
+          settlement.amount_paid_cents > 0,
+        orderSent:
+          settlement.orders_settled > 0,
+        statusChangedRecorded:
+          settlement.orders_settled > 0,
+        ordersSettled:
+          settlement.orders_settled,
+        amountPaidCents:
+          settlement.amount_paid_cents,
+        amountOwedCents:
+          settlement.amount_owed_cents,
+        paymentState:
+          settlement.payment_state,
+      },
+    };
+  }
 
   const paymentOrder =
     await findPaymentOrder(
@@ -1362,7 +1528,11 @@ function createPaymentsWebhookRouter(pool) {
       let relationship = null;
 
       if (
-        nextStatus === 'SUCCEEDED'
+        nextStatus === 'SUCCEEDED' &&
+        !(
+          payment.check_id &&
+          !payment.order_id
+        )
       ) {
         const paymentOrder =
           await findPaymentOrder(
@@ -1483,7 +1653,13 @@ function createPaymentsWebhookRouter(pool) {
 
       if (
         nextStatus === 'SUCCEEDED' &&
-        relationship
+        (
+          relationship ||
+          (
+            payment.check_id &&
+            !payment.order_id
+          )
+        )
       ) {
         const reconciliation =
           await reconcileSucceededPayment(

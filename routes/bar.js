@@ -1,16 +1,65 @@
 'use strict';
 
 const express = require('express');
+const config = require('../config');
 const {
   resolveActor,
   sendActorError,
 } = require('../middleware/resolveActor');
+
+const {
+  settleBarCheckPayment,
+} = require('../lib/barCheckSettlement');
+const {
+  reconcileSucceededPayment,
+} = require('./payments/payments.webhook');
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 const STAFF_ROLES = new Set(['Manager', 'Employee']);
 const CHECK_STATUSES = new Set(['OPEN', 'CLOSED', 'VOIDED']);
+
+const REUSABLE_INTENT_STATUSES = new Set([
+  'requires_payment_method',
+  'requires_confirmation',
+  'requires_action',
+  'processing',
+]);
+
+const STRIPE_STATUS_TO_DB = Object.freeze({
+  requires_payment_method:
+    'REQUIRES_PAYMENT_METHOD',
+  requires_confirmation:
+    'REQUIRES_CONFIRMATION',
+  requires_action:
+    'REQUIRES_CONFIRMATION',
+  processing:
+    'PROCESSING',
+  succeeded:
+    'SUCCEEDED',
+  canceled:
+    'CANCELLED',
+});
+
+function toPaymentStatusEnum(stripeStatus) {
+  const normalized = String(
+    stripeStatus || ''
+  )
+    .trim()
+    .toLowerCase();
+
+  const mappedStatus =
+    STRIPE_STATUS_TO_DB[normalized];
+
+  if (!mappedStatus) {
+    throw new Error(
+      'STRIPE_PAYMENT_STATUS_UNSUPPORTED'
+    );
+  }
+
+  return mappedStatus;
+}
 
 function isUuid(value) {
   return UUID_RE.test(String(value || '').trim());
@@ -418,6 +467,475 @@ module.exports = function barRoutes(pool, verifyToken) {
       return res.json({ check: result.rows[0] });
     } catch (error) {
       return sendRequestError(req, res, error, 'bar_check_read_failed');
+    }
+  });
+
+  router.post(
+    '/checks/:checkId/payment-intent',
+    verifyToken,
+    async (req, res) => {
+      const client = await pool.connect();
+
+      try {
+        const actor = await resolveActor(
+          pool,
+          req
+        );
+        requireStaff(actor);
+
+        const checkId = String(
+          req.params.checkId || ''
+        ).trim();
+
+        if (!isUuid(checkId)) {
+          const error = new Error(
+            'Invalid check id.'
+          );
+          error.status = 400;
+          error.statusCode = 400;
+          throw error;
+        }
+
+        const stripeKey = String(
+          config.stripe.secretKey || ''
+        ).trim();
+
+        if (!stripeKey) {
+          const error = new Error(
+            'Payments unavailable'
+          );
+          error.status = 503;
+          error.statusCode = 503;
+          throw error;
+        }
+
+        const idempotencyKey = String(
+          req.get('Idempotency-Key') ||
+          req.get('idempotency-key') ||
+          ''
+        ).trim();
+
+        if (!idempotencyKey) {
+          const error = new Error(
+            'Missing Idempotency-Key header'
+          );
+          error.status = 400;
+          error.statusCode = 400;
+          throw error;
+        }
+
+        const stripe =
+          require('stripe')(stripeKey);
+
+        await client.query('BEGIN');
+
+        const checkResult =
+          await client.query(
+            `SELECT
+               id,
+               restaurant_id,
+               status,
+               check_type
+             FROM checks
+             WHERE id = $1
+               AND restaurant_id = $2
+               AND check_type = 'BAR'
+             FOR UPDATE`,
+            [
+              checkId,
+              actor.restaurantId,
+            ]
+          );
+
+        if (checkResult.rowCount === 0) {
+          const error = new Error(
+            'Bar check not found.'
+          );
+          error.status = 404;
+          error.statusCode = 404;
+          throw error;
+        }
+
+        const check = checkResult.rows[0];
+
+        if (check.status !== 'OPEN') {
+          const error = new Error(
+            'Bar check is not open.'
+          );
+          error.status = 409;
+          error.statusCode = 409;
+          throw error;
+        }
+
+        const ordersResult =
+          await client.query(
+            `SELECT
+               id,
+               total_cents,
+               paid_cents,
+               comped_cents,
+               status
+             FROM orders
+             WHERE check_id = $1
+               AND restaurant_id = $2
+               AND status <> 'CANCELLED'
+             ORDER BY created_at ASC, id ASC
+             FOR UPDATE`,
+            [
+              checkId,
+              actor.restaurantId,
+            ]
+          );
+
+        const amountOwedCents =
+          ordersResult.rows.reduce(
+            (sum, order) => {
+              const totalCents =
+                Number(order.total_cents || 0);
+              const paidCents =
+                Number(order.paid_cents || 0);
+              const compedCents =
+                Number(order.comped_cents || 0);
+
+              return (
+                sum +
+                Math.max(
+                  0,
+                  totalCents -
+                    paidCents -
+                    compedCents
+                )
+              );
+            },
+            0
+          );
+
+        if (
+          !Number.isInteger(amountOwedCents) ||
+          amountOwedCents <= 0
+        ) {
+          const error = new Error(
+            'Bar check already paid.'
+          );
+          error.status = 409;
+          error.statusCode = 409;
+          throw error;
+        }
+
+        const latestPayment =
+          await client.query(
+            `SELECT
+               id,
+               order_id,
+               check_id,
+               restaurant_id,
+               amount_cents,
+               payment_intent_id,
+               stripe_payment_intent_id,
+               status
+             FROM payments
+             WHERE check_id = $1
+               AND restaurant_id = $2
+             ORDER BY created_at DESC
+             LIMIT 1
+             FOR UPDATE`,
+            [
+              checkId,
+              actor.restaurantId,
+            ]
+          );
+
+        const persisted =
+          latestPayment.rows[0] || null;
+
+        if (
+          persisted?.payment_intent_id
+        ) {
+          const existing =
+            await stripe.paymentIntents.retrieve(
+              persisted.payment_intent_id
+            );
+
+          const existingStatus =
+            String(existing?.status || '')
+              .trim()
+              .toLowerCase();
+
+          const amountMatches =
+            Number.isInteger(existing?.amount) &&
+            existing.amount ===
+              amountOwedCents;
+
+          const currencyMatches =
+            String(existing?.currency || '')
+              .trim()
+              .toLowerCase() === 'usd';
+
+          const metadataMatches =
+            String(
+              existing?.metadata
+                ?.payment_scope || ''
+            ) === 'BAR_CHECK' &&
+            String(
+              existing?.metadata?.check_id ||
+                ''
+            ) === String(checkId) &&
+            String(
+              existing?.metadata
+                ?.restaurant_id || ''
+            ) ===
+              String(actor.restaurantId);
+
+          const persistedIdentityMatches =
+            persisted.order_id === null &&
+            String(
+              persisted.check_id || ''
+            ) === String(checkId) &&
+            String(
+              persisted.restaurant_id || ''
+            ) ===
+              String(actor.restaurantId) &&
+            String(
+              persisted.payment_intent_id ||
+                ''
+            ) === String(existing?.id || '');
+
+          const persistedAmountMatches =
+            Number(
+              persisted.amount_cents
+            ) === amountOwedCents;
+
+          if (
+            REUSABLE_INTENT_STATUSES.has(
+              existingStatus
+            ) &&
+            amountMatches &&
+            currencyMatches &&
+            metadataMatches &&
+            persistedIdentityMatches &&
+            persistedAmountMatches
+          ) {
+            await client.query('COMMIT');
+
+            return res.status(200).json({
+              paymentIntentId:
+                existing.id,
+              paymentIntentClientSecret:
+                existing.client_secret,
+              amountCents:
+                amountOwedCents,
+              reused: true,
+            });
+          }
+
+          if (
+            existingStatus === 'succeeded' &&
+            Number.isInteger(
+              existing?.amount
+            ) &&
+            Number(existing.amount) ===
+              Number(
+                persisted.amount_cents
+              ) &&
+            currencyMatches &&
+            metadataMatches &&
+            persistedIdentityMatches
+          ) {
+            const reconciliation =
+              await reconcileSucceededPayment(
+                client,
+                existing.id,
+                existing.amount
+              );
+
+            await client.query('COMMIT');
+
+            return res.status(200).json({
+              paymentIntentId:
+                existing.id,
+              amountCents:
+                existing.amount,
+              paymentCompleted: true,
+              reconciled:
+                !reconciliation.deduplicated,
+              reused: false,
+            });
+          }
+
+          const error = new Error(
+            'PAYMENT_INTENT_REUSE_INCOMPATIBLE'
+          );
+          error.status = 409;
+          error.statusCode = 409;
+          throw error;
+        }
+
+        const paymentIntent =
+          await stripe.paymentIntents.create(
+            {
+              amount: amountOwedCents,
+              currency: 'usd',
+              automatic_payment_methods: {
+                enabled: true,
+              },
+              metadata: {
+                payment_scope:
+                  'BAR_CHECK',
+                check_id:
+                  String(checkId),
+                restaurant_id:
+                  String(
+                    actor.restaurantId
+                  ),
+              },
+            },
+            {
+              idempotencyKey,
+            }
+          );
+
+        const statusEnum =
+          toPaymentStatusEnum(
+            paymentIntent.status
+          );
+
+        const persistedAmountCents =
+          Number.isInteger(
+            paymentIntent.amount
+          )
+            ? paymentIntent.amount
+            : amountOwedCents;
+
+        await client.query(
+          `INSERT INTO payments (
+             order_id,
+             check_id,
+             restaurant_id,
+             payment_intent_id,
+             stripe_payment_intent_id,
+             status,
+             amount_cents
+           )
+           VALUES (
+             NULL,
+             $1,
+             $2,
+             $3,
+             $4,
+             $5,
+             $6
+           )
+           ON CONFLICT (
+             payment_intent_id
+           )
+           DO UPDATE SET
+             order_id = NULL,
+             check_id =
+               EXCLUDED.check_id,
+             restaurant_id =
+               EXCLUDED.restaurant_id,
+             stripe_payment_intent_id =
+               EXCLUDED.stripe_payment_intent_id,
+             status =
+               EXCLUDED.status,
+             amount_cents =
+               EXCLUDED.amount_cents`,
+          [
+            checkId,
+            actor.restaurantId,
+            paymentIntent.id,
+            paymentIntent.id,
+            statusEnum,
+            persistedAmountCents,
+          ]
+        );
+
+        await client.query('COMMIT');
+
+        return res.status(200).json({
+          paymentIntentId:
+            paymentIntent.id,
+          paymentIntentClientSecret:
+            paymentIntent.client_secret,
+          amountCents:
+            amountOwedCents,
+          reused: false,
+        });
+      } catch (error) {
+        try {
+          await client.query('ROLLBACK');
+        } catch (_rollbackError) {}
+
+        return sendRequestError(
+          req,
+          res,
+          error,
+          'bar_check_payment_intent_failed'
+        );
+      } finally {
+        client.release();
+      }
+    }
+  );
+
+  router.post('/checks/:checkId/pay', verifyToken, async (req, res) => {
+    const client = await pool.connect();
+
+    try {
+      const actor = await resolveActor(pool, req);
+      requireStaff(actor);
+
+      const checkId = String(req.params.checkId || '').trim();
+      const paymentMethod = String(
+        req.body?.payment_method || ''
+      ).trim().toLowerCase();
+
+      if (!isUuid(checkId)) {
+        const error = new Error('Invalid check id.');
+        error.status = 400;
+        error.statusCode = 400;
+        throw error;
+      }
+
+      if (!['cash', 'card'].includes(paymentMethod)) {
+        const error = new Error(
+          'payment_method must be cash or card.'
+        );
+        error.status = 400;
+        error.statusCode = 400;
+        throw error;
+      }
+
+      await client.query('BEGIN');
+
+      const settlement = await settleBarCheckPayment({
+        client,
+        restaurantId: actor.restaurantId,
+        checkId,
+        paymentMethod,
+        actor,
+      });
+
+      await client.query('COMMIT');
+
+      return res.status(200).json({
+        check_id: checkId,
+        payment_method: paymentMethod,
+        ...settlement,
+      });
+    } catch (error) {
+      try {
+        await client.query('ROLLBACK');
+      } catch (_rollbackError) {}
+
+      return sendRequestError(
+        req,
+        res,
+        error,
+        'bar_check_pay_failed'
+      );
+    } finally {
+      client.release();
     }
   });
 
