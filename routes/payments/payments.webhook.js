@@ -1766,8 +1766,6 @@ function createPaymentsWebhookRouter(pool) {
             error?.table || null,
           error_column:
             error?.column || null,
-          error_detail:
-            error?.detail || null,
           error_routine:
             error?.routine || null,
         }
