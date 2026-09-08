@@ -2,6 +2,7 @@
 
 const express = require('express');
 const config = require('../config');
+const OrdersQ = require('./orders/orders.queries');
 const {
   resolveActor,
   sendActorError,
@@ -304,13 +305,59 @@ module.exports = function barRoutes(pool, verifyToken) {
            c.opened_at,
            c.closed_at,
            c.created_at,
-           c.updated_at
+           c.updated_at,
+           COALESCE(os.order_count, 0)::int AS order_count,
+           COALESCE(os.total_cents, 0)::int AS total_cents,
+           COALESCE(os.paid_cents, 0)::int AS paid_cents,
+           COALESCE(os.comped_cents, 0)::int AS comped_cents,
+           GREATEST(
+             COALESCE(os.total_cents, 0)
+               - COALESCE(os.paid_cents, 0)
+               - COALESCE(os.comped_cents, 0),
+             0
+           )::int AS amount_owed_cents,
+           CASE
+             WHEN COALESCE(os.order_count, 0) = 0 THEN 'UNPAID'
+             WHEN GREATEST(
+               COALESCE(os.total_cents, 0)
+                 - COALESCE(os.paid_cents, 0)
+                 - COALESCE(os.comped_cents, 0),
+               0
+             ) = 0
+              AND COALESCE(os.paid_cents, 0) > 0
+               THEN 'PAID'
+             WHEN GREATEST(
+               COALESCE(os.total_cents, 0)
+                 - COALESCE(os.paid_cents, 0)
+                 - COALESCE(os.comped_cents, 0),
+               0
+             ) = 0
+              AND COALESCE(os.paid_cents, 0) = 0
+              AND COALESCE(os.comped_cents, 0) > 0
+               THEN 'COMPED'
+             WHEN COALESCE(os.paid_cents, 0) > 0
+               OR COALESCE(os.comped_cents, 0) > 0
+               THEN 'PARTIAL'
+             ELSE 'UNPAID'
+           END AS payment_state
          FROM checks c
          LEFT JOIN bar_chairs bc
            ON bc.id = c.bar_chair_id
           AND bc.restaurant_id = c.restaurant_id
+         LEFT JOIN LATERAL (
+           SELECT
+             COUNT(*)::int AS order_count,
+             COALESCE(SUM(o.total_cents), 0)::bigint AS total_cents,
+             COALESCE(SUM(o.paid_cents), 0)::bigint AS paid_cents,
+             COALESCE(SUM(o.comped_cents), 0)::bigint AS comped_cents
+           FROM orders o
+           WHERE o.check_id = c.id
+             AND o.restaurant_id = c.restaurant_id
+             AND o.status <> 'CANCELLED'
+         ) os ON TRUE
          WHERE c.restaurant_id = $1
            AND c.status = $2
+           AND c.check_type = 'BAR'
          ORDER BY c.opened_at ASC`,
         [actor.restaurantId, status]
       );
@@ -334,7 +381,14 @@ module.exports = function barRoutes(pool, verifyToken) {
           ? null
           : String(req.body.bar_chair_id).trim();
 
-      if (barChairId !== null && !isUuid(barChairId)) {
+      if (barChairId === null || barChairId.length === 0) {
+        const error = new Error('bar_chair_id is required for BAR checks.');
+        error.status = 400;
+        error.statusCode = 400;
+        throw error;
+      }
+
+      if (!isUuid(barChairId)) {
         const error = new Error('Invalid bar_chair_id.');
         error.status = 400;
         error.statusCode = 400;
@@ -346,7 +400,7 @@ module.exports = function barRoutes(pool, verifyToken) {
       client = await pool.connect();
       await client.query('BEGIN');
 
-      if (barChairId !== null) {
+      {
         const chair = await client.query(
           `SELECT id, active
            FROM bar_chairs
@@ -375,10 +429,11 @@ module.exports = function barRoutes(pool, verifyToken) {
         `INSERT INTO checks (
            restaurant_id,
            bar_chair_id,
+           check_type,
            opened_by_user_id,
            display_name
          )
-         VALUES ($1, $2, $3, $4)
+         VALUES ($1, $2, 'BAR', $3, $4)
          RETURNING
            id,
            bar_chair_id,
@@ -420,6 +475,56 @@ module.exports = function barRoutes(pool, verifyToken) {
     }
   });
 
+  router.get('/checks/:checkId/orders', verifyToken, async (req, res) => {
+    try {
+      const actor = await resolveActor(pool, req);
+      requireStaff(actor);
+
+      const checkId = String(req.params.checkId || '').trim();
+
+      if (!isUuid(checkId)) {
+        const error = new Error('Invalid check id.');
+        error.status = 400;
+        error.statusCode = 400;
+        throw error;
+      }
+
+      const checkResult = await pool.query(
+        `SELECT id
+           FROM checks
+          WHERE id = $1
+            AND restaurant_id = $2
+            AND check_type = 'BAR'
+          LIMIT 1`,
+        [checkId, actor.restaurantId]
+      );
+
+      if (checkResult.rows.length === 0) {
+        const error = new Error('Bar check not found.');
+        error.status = 404;
+        error.statusCode = 404;
+        throw error;
+      }
+
+      const orders = await OrdersQ.listForCheckScoped(
+        pool,
+        checkId,
+        {
+          restaurantId: actor.restaurantId,
+        }
+      );
+
+      return res.json({ orders });
+    } catch (error) {
+      return sendRequestError(
+        req,
+        res,
+        error,
+        'bar_check_orders_failed'
+      );
+    }
+  });
+
   router.get('/checks/:checkId', verifyToken, async (req, res) => {
     try {
       const actor = await resolveActor(pool, req);
@@ -446,13 +551,59 @@ module.exports = function barRoutes(pool, verifyToken) {
            c.opened_at,
            c.closed_at,
            c.created_at,
-           c.updated_at
+           c.updated_at,
+           COALESCE(os.order_count, 0)::int AS order_count,
+           COALESCE(os.total_cents, 0)::int AS total_cents,
+           COALESCE(os.paid_cents, 0)::int AS paid_cents,
+           COALESCE(os.comped_cents, 0)::int AS comped_cents,
+           GREATEST(
+             COALESCE(os.total_cents, 0)
+               - COALESCE(os.paid_cents, 0)
+               - COALESCE(os.comped_cents, 0),
+             0
+           )::int AS amount_owed_cents,
+           CASE
+             WHEN COALESCE(os.order_count, 0) = 0 THEN 'UNPAID'
+             WHEN GREATEST(
+               COALESCE(os.total_cents, 0)
+                 - COALESCE(os.paid_cents, 0)
+                 - COALESCE(os.comped_cents, 0),
+               0
+             ) = 0
+              AND COALESCE(os.paid_cents, 0) > 0
+               THEN 'PAID'
+             WHEN GREATEST(
+               COALESCE(os.total_cents, 0)
+                 - COALESCE(os.paid_cents, 0)
+                 - COALESCE(os.comped_cents, 0),
+               0
+             ) = 0
+              AND COALESCE(os.paid_cents, 0) = 0
+              AND COALESCE(os.comped_cents, 0) > 0
+               THEN 'COMPED'
+             WHEN COALESCE(os.paid_cents, 0) > 0
+               OR COALESCE(os.comped_cents, 0) > 0
+               THEN 'PARTIAL'
+             ELSE 'UNPAID'
+           END AS payment_state
          FROM checks c
          LEFT JOIN bar_chairs bc
            ON bc.id = c.bar_chair_id
           AND bc.restaurant_id = c.restaurant_id
+         LEFT JOIN LATERAL (
+           SELECT
+             COUNT(*)::int AS order_count,
+             COALESCE(SUM(o.total_cents), 0)::bigint AS total_cents,
+             COALESCE(SUM(o.paid_cents), 0)::bigint AS paid_cents,
+             COALESCE(SUM(o.comped_cents), 0)::bigint AS comped_cents
+           FROM orders o
+           WHERE o.check_id = c.id
+             AND o.restaurant_id = c.restaurant_id
+             AND o.status <> 'CANCELLED'
+         ) os ON TRUE
          WHERE c.id = $1
            AND c.restaurant_id = $2
+           AND c.check_type = 'BAR'
          LIMIT 1`,
         [checkId, actor.restaurantId]
       );
@@ -939,6 +1090,152 @@ module.exports = function barRoutes(pool, verifyToken) {
     }
   });
 
+  router.post('/checks/:checkId/close', verifyToken, async (req, res) => {
+    const client = await pool.connect();
+
+    try {
+      const actor = await resolveActor(pool, req);
+      requireStaff(actor);
+
+      const checkId = String(req.params.checkId || '').trim();
+
+      if (!isUuid(checkId)) {
+        const error = new Error('Invalid check id.');
+        error.status = 400;
+        error.statusCode = 400;
+        throw error;
+      }
+
+      await client.query('BEGIN');
+
+      const checkResult = await client.query(
+        `SELECT
+           id,
+           restaurant_id,
+           bar_chair_id,
+           check_type,
+           opened_by_user_id,
+           closed_by_user_id,
+           display_name,
+           status,
+           opened_at,
+           closed_at,
+           created_at,
+           updated_at
+         FROM checks
+         WHERE id = $1
+           AND restaurant_id = $2
+           AND check_type = 'BAR'
+         FOR UPDATE`,
+        [checkId, actor.restaurantId]
+      );
+
+      if (checkResult.rows.length === 0) {
+        const error = new Error('Bar check not found.');
+        error.status = 404;
+        error.statusCode = 404;
+        throw error;
+      }
+
+      const check = checkResult.rows[0];
+
+      if (check.status !== 'OPEN') {
+        const error = new Error('Only OPEN bar checks can be closed.');
+        error.status = 409;
+        error.statusCode = 409;
+        throw error;
+      }
+
+      const balanceResult = await client.query(
+        `SELECT
+           COUNT(*)::int AS order_count,
+           COALESCE(SUM(o.total_cents), 0)::bigint AS total_cents,
+           COALESCE(SUM(o.paid_cents), 0)::bigint AS paid_cents,
+           COALESCE(SUM(o.comped_cents), 0)::bigint AS comped_cents,
+           GREATEST(
+             COALESCE(SUM(o.total_cents), 0)
+               - COALESCE(SUM(o.paid_cents), 0)
+               - COALESCE(SUM(o.comped_cents), 0),
+             0
+           )::bigint AS amount_owed_cents
+         FROM orders o
+         WHERE o.check_id = $1
+           AND o.restaurant_id = $2
+           AND o.status <> 'CANCELLED'`,
+        [checkId, actor.restaurantId]
+      );
+
+      const balance = balanceResult.rows[0];
+      const amountOwedCents = Number(balance.amount_owed_cents || 0);
+
+      if (amountOwedCents > 0) {
+        const error = new Error(
+          'Bar check cannot be closed while an outstanding balance remains.'
+        );
+        error.status = 409;
+        error.statusCode = 409;
+        throw error;
+      }
+
+      const closedResult = await client.query(
+        `UPDATE checks
+         SET status = 'CLOSED',
+             closed_at = NOW(),
+             closed_by_user_id = $3,
+             updated_at = NOW()
+         WHERE id = $1
+           AND restaurant_id = $2
+           AND check_type = 'BAR'
+           AND status = 'OPEN'
+         RETURNING
+           id,
+           restaurant_id,
+           bar_chair_id,
+           check_type,
+           opened_by_user_id,
+           closed_by_user_id,
+           display_name,
+           status,
+           opened_at,
+           closed_at,
+           created_at,
+           updated_at`,
+        [checkId, actor.restaurantId, actor.userId]
+      );
+
+      if (closedResult.rows.length !== 1) {
+        const error = new Error('Bar check could not be closed.');
+        error.status = 409;
+        error.statusCode = 409;
+        throw error;
+      }
+
+      await client.query('COMMIT');
+
+      return res.json({
+        check: closedResult.rows[0],
+      });
+    } catch (error) {
+      try {
+        await client.query('ROLLBACK');
+      } catch (_) {
+        // Preserve the original error.
+      }
+
+      const status = error.statusCode || error.status || 500;
+
+      if (status >= 500) {
+        console.error('Failed to close bar check:', error);
+      }
+
+      return res.status(status).json({
+        error: error.message || 'Failed to close bar check.',
+      });
+    } finally {
+      client.release();
+    }
+  });
+
   router.patch('/checks/:checkId', verifyToken, async (req, res) => {
     let client;
 
@@ -988,6 +1285,7 @@ module.exports = function barRoutes(pool, verifyToken) {
          FROM checks
          WHERE id = $1
            AND restaurant_id = $2
+           AND check_type = 'BAR'
          FOR UPDATE`,
         [checkId, actor.restaurantId]
       );
