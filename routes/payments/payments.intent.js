@@ -153,6 +153,7 @@ router.post(
              created_by_user_id,
              total_cents,
              paid_cents,
+             comped_cents,
              status
            FROM orders
            WHERE id = $1
@@ -189,8 +190,13 @@ router.post(
         const paidCents = Number(
           order.paid_cents || 0
         );
+        const compedCents = Number(
+          order.comped_cents || 0
+        );
         const remainingCents =
-          totalCents - paidCents;
+          totalCents -
+          paidCents -
+          compedCents;
 
         let reusable = null;
 

@@ -145,6 +145,8 @@ async function findPaymentOrder(
            AS order_total_cents,
          o.paid_cents
            AS order_paid_cents,
+         o.comped_cents
+           AS order_comped_cents,
          o.status
            AS order_status,
          o.order_origin
@@ -254,8 +256,14 @@ function validatePaymentOrder(
     row.order_paid_cents || 0
   );
 
+  const orderCompedCents = Number(
+    row.order_comped_cents || 0
+  );
+
   const remainingCents =
-    orderTotalCents - orderPaidCents;
+    orderTotalCents -
+    orderPaidCents -
+    orderCompedCents;
 
   if (
     !Number.isInteger(paymentAmountCents) ||
@@ -308,6 +316,7 @@ function validatePaymentOrder(
     stripeAmountCents,
     orderTotalCents,
     orderPaidCents,
+    orderCompedCents,
     remainingCents,
   };
 }
@@ -925,6 +934,11 @@ async function reconcileSucceededPayment(
   const orderPaidCents =
     Number(paymentOrder.order_paid_cents);
 
+  const orderCompedCents =
+    Number(
+      paymentOrder.order_comped_cents || 0
+    );
+
   const paymentAlreadyRecorded =
     await paymentRecordedEventExists(
       client,
@@ -938,7 +952,9 @@ async function reconcileSucceededPayment(
     Number.isInteger(orderTotalCents) &&
     orderTotalCents > 0 &&
     Number.isInteger(orderPaidCents) &&
-    orderPaidCents >= orderTotalCents &&
+    Number.isInteger(orderCompedCents) &&
+    orderPaidCents + orderCompedCents >=
+      orderTotalCents &&
     paymentAlreadyRecorded;
 
   if (alreadyApplied) {
@@ -960,9 +976,11 @@ async function reconcileSucceededPayment(
       stripeAmountCents,
       orderTotalCents,
       orderPaidCents,
+      orderCompedCents,
       remainingCents:
         orderTotalCents -
-        orderPaidCents,
+        orderPaidCents -
+        orderCompedCents,
     };
 
     return {
@@ -1589,6 +1607,11 @@ function createPaymentsWebhookRouter(pool) {
             paymentOrder.order_paid_cents || 0
           );
 
+        const orderCompedCents =
+          Number(
+            paymentOrder.order_comped_cents || 0
+          );
+
         const paymentAlreadyRecorded =
           await paymentRecordedEventExists(
             client,
@@ -1602,7 +1625,9 @@ function createPaymentsWebhookRouter(pool) {
           Number.isInteger(orderTotalCents) &&
           orderTotalCents > 0 &&
           Number.isInteger(orderPaidCents) &&
-          orderPaidCents >= orderTotalCents &&
+          Number.isInteger(orderCompedCents) &&
+          orderPaidCents + orderCompedCents >=
+            orderTotalCents &&
           paymentAlreadyRecorded;
 
         if (alreadyApplied) {
