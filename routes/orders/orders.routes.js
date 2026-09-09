@@ -1495,6 +1495,260 @@ module.exports = function buildOrdersRouter({ pool, verifyToken, handleError }) 
       const params = managerScope ? [orderId, ctx.restaurantId] : [orderId, ctx.restaurantId, ctx.userId];
       const userPred = managerScope ? '' : ' AND created_by_user_id = $3';
 
+      // QUICK orders use an authoritative transactional settlement path.
+      // Non-QUICK orders continue through the legacy payment behavior below.
+      const quickProbe = await pool.query(
+        `SELECT type
+         FROM orders
+         WHERE id = $1
+           AND restaurant_id = $2${userPred}
+         LIMIT 1`,
+        params
+      );
+
+      if (quickProbe.rowCount === 0) {
+        return res.status(404).json({
+          error: 'Order not found or unauthorized',
+        });
+      }
+
+      if (quickProbe.rows[0].type === 'QUICK') {
+        if (payment_method === 'card') {
+          return res.status(409).json({
+            error:
+              'Quick card payments must use Stripe settlement.',
+          });
+        }
+
+        const client = await pool.connect();
+
+        try {
+          await client.query('BEGIN');
+
+          const locked = await client.query(
+            `SELECT
+               id,
+               restaurant_id,
+               type,
+               status,
+               total_cents,
+               paid_cents,
+               comped_cents,
+               created_by_user_id
+             FROM orders
+             WHERE id = $1
+               AND restaurant_id = $2${userPred}
+             FOR UPDATE`,
+            params
+          );
+
+          if (locked.rowCount === 0) {
+            await client.query('ROLLBACK');
+
+            return res.status(404).json({
+              error: 'Order not found or unauthorized',
+            });
+          }
+
+          const row = locked.rows[0];
+
+          if (row.type !== 'QUICK') {
+            throw new Error(
+              'QUICK settlement invariant failed: order type changed.'
+            );
+          }
+
+          const totalCents =
+            Number.isInteger(row.total_cents)
+              ? row.total_cents
+              : Number(row.total_cents) || 0;
+
+          const paidCents =
+            Number.isInteger(row.paid_cents)
+              ? row.paid_cents
+              : Number(row.paid_cents) || 0;
+
+          const compedCents =
+            Number.isInteger(row.comped_cents)
+              ? row.comped_cents
+              : Number(row.comped_cents) || 0;
+
+          const remainingCents = Math.max(
+            0,
+            totalCents - paidCents - compedCents
+          );
+
+          // Idempotent retry / already-settled path.
+          if (remainingCents <= 0) {
+            await client.query('COMMIT');
+
+            return res.status(200).json({
+              order_id: row.id,
+              payment_method,
+              amount_paid_cents: 0,
+              paid_cents: paidCents,
+              comped_cents: compedCents,
+              total_cents: totalCents,
+              status: row.status,
+              payment_state: 'PAID',
+              amount_owed_cents: 0,
+              is_noop: true,
+            });
+          }
+
+          if (row.status !== 'OPEN') {
+            await client.query('ROLLBACK');
+
+            return res.status(409).json({
+              error:
+                'Quick order must be OPEN before settlement.',
+            });
+          }
+
+          const updated = await client.query(
+            `UPDATE orders
+             SET paid_cents = paid_cents + $2
+             WHERE id = $1
+             RETURNING
+               id,
+               restaurant_id,
+               status,
+               total_cents,
+               paid_cents,
+               comped_cents`,
+            [row.id, remainingCents]
+          );
+
+          const paymentMeta = {
+            amount_cents: remainingCents,
+            payment_method,
+            order_id: row.id,
+          };
+
+          await client.query(
+            `INSERT INTO order_events (
+               order_id,
+               restaurant_id,
+               event_type,
+               from_status,
+               to_status,
+               actor_type,
+               actor_role,
+               actor_user_id,
+               actor_firebase_uid,
+               idempotency_key,
+               meta
+             ) VALUES (
+               $1,
+               $2,
+               'PAYMENT_RECORDED',
+               NULL,
+               NULL,
+               'USER',
+               $3,
+               $4,
+               NULL,
+               NULL,
+               $5::jsonb
+             )`,
+            [
+              row.id,
+              row.restaurant_id,
+              normalizeRoleForDb(ctx.role),
+              ctx.userId,
+              JSON.stringify(paymentMeta),
+            ]
+          );
+
+          const transitioned = await client.query(
+            `UPDATE orders
+             SET status = 'SENT',
+                 sent_at = COALESCE(sent_at, NOW())
+             WHERE id = $1
+               AND status = 'OPEN'
+             RETURNING
+               id,
+               status,
+               total_cents,
+               paid_cents,
+               comped_cents`,
+            [row.id]
+          );
+
+          if (transitioned.rowCount !== 1) {
+            throw new Error(
+              'QUICK settlement failed to transition OPEN order to SENT.'
+            );
+          }
+
+          await client.query(
+            `INSERT INTO order_events (
+               order_id,
+               restaurant_id,
+               event_type,
+               from_status,
+               to_status,
+               actor_type,
+               actor_role,
+               actor_user_id,
+               actor_firebase_uid,
+               idempotency_key,
+               meta
+             ) VALUES (
+               $1,
+               $2,
+               'STATUS_CHANGED',
+               'OPEN',
+               'SENT',
+               'USER',
+               $3,
+               $4,
+               NULL,
+               NULL,
+               $5::jsonb
+             )`,
+            [
+              row.id,
+              row.restaurant_id,
+              normalizeRoleForDb(ctx.role),
+              ctx.userId,
+              JSON.stringify({
+                reason: 'PAYMENT_SETTLED',
+                payment_method,
+                order_id: row.id,
+              }),
+            ]
+          );
+
+          await client.query('COMMIT');
+
+          const finalOrder = transitioned.rows[0];
+
+          return res.status(200).json({
+            order_id: row.id,
+            payment_method,
+            amount_paid_cents: remainingCents,
+            paid_cents: finalOrder.paid_cents,
+            comped_cents: finalOrder.comped_cents,
+            total_cents: finalOrder.total_cents,
+            status: finalOrder.status,
+            payment_state: 'PAID',
+            amount_owed_cents: 0,
+            is_noop: false,
+          });
+        } catch (error) {
+          try {
+            await client.query('ROLLBACK');
+          } catch {
+            // Preserve the original settlement error.
+          }
+
+          throw error;
+        } finally {
+          client.release();
+        }
+      }
+
       // Only allow paying an order that exists. We also enforce "fully paid" semantics here.
       const cur = await pool.query(
         `SELECT id, status, total_cents, paid_cents
