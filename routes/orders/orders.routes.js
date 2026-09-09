@@ -36,7 +36,13 @@ module.exports = function buildOrdersRouter({ pool, verifyToken, handleError }) 
 
   const isProd = String(config.app.nodeEnv || '').toLowerCase() === 'production';
 
-  const stableItemHashPayload = (restaurantId, tableId, checkId, items) => {
+  const stableItemHashPayload = (
+    restaurantId,
+    tableId,
+    checkId,
+    orderType,
+    items
+  ) => {
     const norm = (items || []).map((it) => {
       const modifiers = Array.isArray(it.modifiers)
         ? it.modifiers.map((group) => ({
@@ -71,6 +77,10 @@ module.exports = function buildOrdersRouter({ pool, verifyToken, handleError }) 
       tableId: tableId || null,
       items: norm,
     };
+
+    if (orderType === 'QUICK') {
+      payload.orderType = orderType;
+    }
 
     if (checkId) {
       payload.checkId = checkId;
@@ -545,6 +555,25 @@ module.exports = function buildOrdersRouter({ pool, verifyToken, handleError }) 
           ? null
           : String(checkIdRaw).trim();
 
+      const rawOrderType =
+        req.body?.type === undefined ||
+        req.body?.type === null ||
+        String(req.body.type).trim() === ''
+          ? 'DINE_IN'
+          : String(req.body.type).trim().toUpperCase();
+
+      const orderType =
+        rawOrderType === 'DINE_IN' ||
+        rawOrderType === 'QUICK'
+          ? rawOrderType
+          : null;
+
+      if (!orderType) {
+        return res.status(400).json({
+          error: 'Invalid order type.',
+        });
+      }
+
       if (
         checkId &&
         !isUuid(checkId)
@@ -571,6 +600,36 @@ module.exports = function buildOrdersRouter({ pool, verifyToken, handleError }) 
         return res.status(403).json({
           error:
             'Customer orders cannot belong to a bar check.',
+        });
+      }
+
+      if (
+        orderType === 'QUICK' &&
+        orderOrigin === 'CUSTOMER'
+      ) {
+        return res.status(403).json({
+          error:
+            'Quick orders are staff-only.',
+        });
+      }
+
+      if (
+        orderType === 'QUICK' &&
+        tableId
+      ) {
+        return res.status(400).json({
+          error:
+            'Quick orders cannot include table_id.',
+        });
+      }
+
+      if (
+        orderType === 'QUICK' &&
+        checkId
+      ) {
+        return res.status(400).json({
+          error:
+            'Quick orders cannot include check_id.',
         });
       }
 
@@ -621,6 +680,7 @@ module.exports = function buildOrdersRouter({ pool, verifyToken, handleError }) 
             restaurantIdFinal,
             tableId,
             checkId,
+            orderType,
             items
           );
 
@@ -742,6 +802,7 @@ module.exports = function buildOrdersRouter({ pool, verifyToken, handleError }) 
              check_id,
              created_by_user_id,
              order_origin,
+             type,
              subtotal_cents,
              tax_cents,
              tip_cents,
@@ -749,7 +810,7 @@ module.exports = function buildOrdersRouter({ pool, verifyToken, handleError }) 
              paid_cents,
              status,
              opened_at
-           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'OPEN', NOW())
+           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'OPEN', NOW())
            RETURNING *`,
           [
             restaurantIdFinal,
@@ -757,6 +818,7 @@ module.exports = function buildOrdersRouter({ pool, verifyToken, handleError }) 
             checkId,
             createdByUserIdForOrder,
             orderOrigin,
+            orderType,
             subtotal_cents,
             tax_cents,
             tip_cents,
@@ -833,6 +895,7 @@ module.exports = function buildOrdersRouter({ pool, verifyToken, handleError }) 
                 restaurantIdFinal,
                 tableId,
                 checkId,
+                orderType,
                 items
               ),
             }
