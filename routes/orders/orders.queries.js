@@ -297,6 +297,9 @@ async function listKdsActiveScoped(pool, ctx) {
 
   const result = await pool.query(
     `SELECT o.*,
+            c.display_name AS bar_check_display_name,
+            bc.chair_number AS bar_chair_number,
+            bc.display_name AS bar_chair_display_name,
             COALESCE(json_agg(json_build_object(
               'menu_item_id', oi.menu_item_id,
               'name', oi.name_snapshot,
@@ -306,9 +309,18 @@ async function listKdsActiveScoped(pool, ctx) {
             )) FILTER (WHERE oi.id IS NOT NULL), '[]') AS items
        FROM orders o
        LEFT JOIN order_items oi ON o.id = oi.order_id
+       LEFT JOIN checks c
+         ON c.id = o.check_id
+        AND c.restaurant_id = o.restaurant_id
+       LEFT JOIN bar_chairs bc
+         ON bc.id = c.bar_chair_id
+        AND bc.restaurant_id = c.restaurant_id
       WHERE o.restaurant_id = $1
         AND o.status IN ('SENT', 'READY')
-      GROUP BY o.id
+      GROUP BY o.id,
+               c.display_name,
+               bc.chair_number,
+               bc.display_name
       ORDER BY o.opened_at DESC, o.id DESC`,
     [restaurantId]
   );
@@ -333,6 +345,9 @@ async function listKdsCompletedScoped(pool, ctx) {
 
   const result = await pool.query(
     `SELECT o.*,
+            c.display_name AS bar_check_display_name,
+            bc.chair_number AS bar_chair_number,
+            bc.display_name AS bar_chair_display_name,
             COALESCE(json_agg(json_build_object(
               'menu_item_id', oi.menu_item_id,
               'name', oi.name_snapshot,
@@ -342,9 +357,18 @@ async function listKdsCompletedScoped(pool, ctx) {
             )) FILTER (WHERE oi.id IS NOT NULL), '[]') AS items
        FROM orders o
        LEFT JOIN order_items oi ON o.id = oi.order_id
+       LEFT JOIN checks c
+         ON c.id = o.check_id
+        AND c.restaurant_id = o.restaurant_id
+       LEFT JOIN bar_chairs bc
+         ON bc.id = c.bar_chair_id
+        AND bc.restaurant_id = c.restaurant_id
       WHERE o.restaurant_id = $1
         AND o.status = 'CLOSED'
-      GROUP BY o.id
+      GROUP BY o.id,
+               c.display_name,
+               bc.chair_number,
+               bc.display_name
       ORDER BY o.opened_at DESC, o.id DESC`,
     [restaurantId]
   );
