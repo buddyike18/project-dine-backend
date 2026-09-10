@@ -1843,7 +1843,8 @@ module.exports = function buildOrdersRouter({ pool, verifyToken, handleError }) 
 
         // Enforce per-order visibility + transition gating from backend truth.
         const cur = await pool.query(
-          `SELECT id, status, total_cents, paid_cents, created_by_user_id, table_id
+          `SELECT id, status, total_cents, paid_cents, created_by_user_id, table_id,
+                  order_origin, check_id
            FROM orders
            WHERE id = $1 AND restaurant_id = $2
            LIMIT 1`,
@@ -1863,13 +1864,28 @@ module.exports = function buildOrdersRouter({ pool, verifyToken, handleError }) 
           const isKitchenReadyTransition =
             fromStatus === 'SENT' && requestedStatus === 'READY';
 
-          visibleToActor = isKitchenReadyTransition
-            ? true
-            : await employeeHasActiveTableAssignment({
-                restaurantId: ctx.restaurantId,
-                tableId: row.table_id,
-                userId: ctx.userId,
-              });
+          if (isKitchenReadyTransition) {
+            visibleToActor = true;
+          } else if (row.check_id != null && row.table_id == null) {
+            const barCheck = await pool.query(
+              `SELECT id
+               FROM checks
+               WHERE id = $1
+                 AND restaurant_id = $2
+                 AND check_type = 'BAR'
+                 AND status = 'OPEN'
+               LIMIT 1`,
+              [row.check_id, ctx.restaurantId]
+            );
+
+            visibleToActor = barCheck.rowCount === 1;
+          } else {
+            visibleToActor = await employeeHasActiveTableAssignment({
+              restaurantId: ctx.restaurantId,
+              tableId: row.table_id,
+              userId: ctx.userId,
+            });
+          }
         } else if (ctx.role === 'Customer') {
           visibleToActor = row.created_by_user_id === ctx.userId;
         }
@@ -1903,7 +1919,13 @@ module.exports = function buildOrdersRouter({ pool, verifyToken, handleError }) 
         if (fromStatus === 'OPEN' && requestedStatus === 'SENT') {
           const total = Number.isInteger(row.total_cents) ? row.total_cents : 0;
           const paid = Number.isInteger(row.paid_cents) ? row.paid_cents : 0;
-          if (!(paid >= total && total >= 0)) {
+
+          const isStaffBarOrder =
+            row.order_origin === 'STAFF' &&
+            row.check_id != null &&
+            row.table_id == null;
+
+          if (!isStaffBarOrder && !(paid >= total && total >= 0)) {
             return res.status(409).json({ error: 'Order must be fully paid before sending' });
           }
         }
