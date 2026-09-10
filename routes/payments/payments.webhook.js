@@ -150,7 +150,9 @@ async function findPaymentOrder(
          o.status
            AS order_status,
          o.order_origin
-           AS order_origin
+           AS order_origin,
+         o.type
+           AS order_type
 
        FROM payments p
 
@@ -312,6 +314,7 @@ function validatePaymentOrder(
       row.order_restaurant_id,
     orderStatus: row.order_status,
     orderOrigin: row.order_origin,
+    orderType: row.order_type,
     paymentAmountCents,
     stripeAmountCents,
     orderTotalCents,
@@ -527,9 +530,17 @@ async function autoSendCustomerOrder(
        WHERE id = $1
          AND restaurant_id = $2
          AND status = 'OPEN'
-         AND COALESCE(paid_cents, 0) >=
-             COALESCE(total_cents, 0)
-         AND order_origin = 'CUSTOMER'
+         AND (
+           COALESCE(paid_cents, 0) +
+           COALESCE(comped_cents, 0)
+         ) >= COALESCE(total_cents, 0)
+         AND (
+           order_origin = 'CUSTOMER'
+           OR (
+             order_origin = 'STAFF'
+             AND type = 'QUICK'
+           )
+         )
        RETURNING
          id,
          restaurant_id,
@@ -557,12 +568,17 @@ async function insertSentStatusEvent(
   const idempotencyKey =
     `stripe-status-sent:${paymentIntentId}`;
 
+  const reason =
+    relationship.orderOrigin === 'STAFF' &&
+    relationship.orderType === 'QUICK'
+      ? 'QUICK_ORDER_PAYMENT_COMPLETED'
+      : 'CUSTOMER_ORDER_PAYMENT_COMPLETED';
+
   const meta = {
     provider: 'STRIPE',
     payment_reference:
       paymentIntentId,
-    reason:
-      'CUSTOMER_ORDER_PAYMENT_COMPLETED',
+    reason,
   };
 
   try {
