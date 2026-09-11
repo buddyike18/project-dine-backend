@@ -1844,7 +1844,7 @@ module.exports = function buildOrdersRouter({ pool, verifyToken, handleError }) 
         // Enforce per-order visibility + transition gating from backend truth.
         const cur = await pool.query(
           `SELECT id, status, total_cents, paid_cents, created_by_user_id, table_id,
-                  order_origin, check_id
+                  order_origin, check_id, type
            FROM orders
            WHERE id = $1 AND restaurant_id = $2
            LIMIT 1`,
@@ -1920,12 +1920,31 @@ module.exports = function buildOrdersRouter({ pool, verifyToken, handleError }) 
           const total = Number.isInteger(row.total_cents) ? row.total_cents : 0;
           const paid = Number.isInteger(row.paid_cents) ? row.paid_cents : 0;
 
+          const orderType = String(row.type || '').toUpperCase();
+
+          const isStaffTableOrder =
+            row.order_origin === 'STAFF' &&
+            row.table_id != null &&
+            row.check_id == null &&
+            orderType !== 'QUICK';
+
           const isStaffBarOrder =
             row.order_origin === 'STAFF' &&
             row.check_id != null &&
             row.table_id == null;
 
-          if (!isStaffBarOrder && !(paid >= total && total >= 0)) {
+          const isStaffQuickOrder =
+            row.order_origin === 'STAFF' &&
+            orderType === 'QUICK' &&
+            row.table_id == null &&
+            row.check_id == null;
+
+          const isStaffContingencyOrder =
+            isStaffTableOrder ||
+            isStaffBarOrder ||
+            isStaffQuickOrder;
+
+          if (!isStaffContingencyOrder && !(paid >= total && total >= 0)) {
             return res.status(409).json({ error: 'Order must be fully paid before sending' });
           }
         }
