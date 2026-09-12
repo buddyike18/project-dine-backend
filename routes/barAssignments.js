@@ -1,12 +1,34 @@
 const express = require('express');
-const {
-  resolveActor,
-  requireRole,
-  sendActorError,
-} = require('../lib/actor');
+const { resolveActor } = require('../middleware/resolveActor');
 
-const STAFF_ASSIGNMENT_VIEW_ROLES = ['Manager', 'Employee'];
-const STAFF_ASSIGNMENT_MANAGE_ROLES = ['Manager'];
+const STAFF_ASSIGNMENT_VIEW_ROLES = new Set(['Manager', 'Employee']);
+const STAFF_ASSIGNMENT_MANAGE_ROLES = new Set(['Manager']);
+
+function requireRole(actor, allowedRoles) {
+  if (!actor?.role || !allowedRoles.has(actor.role)) {
+    const error = new Error('Forbidden');
+    error.status = 403;
+    error.statusCode = 403;
+    throw error;
+  }
+}
+
+function sendActorError(req, res, error, reason) {
+  const statusCode = Number(error?.statusCode || error?.status || 500);
+
+  if (statusCode === 401) {
+    return res.status(401).json({ error: 'Authentication required' });
+  }
+
+  if (statusCode === 403) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+
+  console.error(reason, error);
+  return res.status(statusCode).json({
+    error: statusCode >= 500 ? 'Internal server error' : error.message,
+  });
+}
 
 module.exports = (pool, verifyToken) => {
   const router = express.Router();
