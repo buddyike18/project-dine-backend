@@ -152,7 +152,11 @@ async function findPaymentOrder(
          o.order_origin
            AS order_origin,
          o.type
-           AS order_type
+           AS order_type,
+         o.table_id
+           AS order_table_id,
+         o.check_id
+           AS order_check_id
 
        FROM payments p
 
@@ -315,6 +319,8 @@ function validatePaymentOrder(
     orderStatus: row.order_status,
     orderOrigin: row.order_origin,
     orderType: row.order_type,
+    tableId: row.order_table_id,
+    checkId: row.order_check_id,
     paymentAmountCents,
     stripeAmountCents,
     orderTotalCents,
@@ -540,6 +546,12 @@ async function autoSendCustomerOrder(
              order_origin = 'STAFF'
              AND type = 'QUICK'
            )
+           OR (
+             order_origin = 'STAFF'
+             AND table_id IS NOT NULL
+             AND check_id IS NULL
+             AND type <> 'QUICK'
+           )
          )
        RETURNING
          id,
@@ -572,7 +584,12 @@ async function insertSentStatusEvent(
     relationship.orderOrigin === 'STAFF' &&
     relationship.orderType === 'QUICK'
       ? 'QUICK_ORDER_PAYMENT_COMPLETED'
-      : 'CUSTOMER_ORDER_PAYMENT_COMPLETED';
+      : relationship.orderOrigin === 'STAFF' &&
+          relationship.tableId != null &&
+          relationship.checkId == null &&
+          relationship.orderType !== 'QUICK'
+        ? 'TABLE_ORDER_PAYMENT_COMPLETED'
+        : 'CUSTOMER_ORDER_PAYMENT_COMPLETED';
 
   const meta = {
     provider: 'STRIPE',
