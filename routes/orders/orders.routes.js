@@ -594,6 +594,25 @@ module.exports = function buildOrdersRouter({ pool, verifyToken, handleError }) 
       }
 
       if (
+        ctx.role === 'Employee' &&
+        tableId &&
+        !checkId &&
+        orderType !== 'QUICK'
+      ) {
+        const hasAssignment = await employeeHasActiveTableAssignment({
+          restaurantId: restaurantIdFinal,
+          tableId,
+          userId: ctx.userId,
+        });
+
+        if (!hasAssignment) {
+          return res.status(403).json({
+            error: 'Employee is not assigned to this table',
+          });
+        }
+      }
+
+      if (
         orderOrigin === 'CUSTOMER' &&
         checkId
       ) {
@@ -1017,6 +1036,21 @@ module.exports = function buildOrdersRouter({ pool, verifyToken, handleError }) 
 
     try {
       const ctx = await resolveActorContext(req);
+
+      if (ctx.role === 'Employee') {
+        const hasAssignment = await employeeHasActiveTableAssignment({
+          restaurantId: ctx.restaurantId,
+          tableId,
+          userId: ctx.userId,
+        });
+
+        if (!hasAssignment) {
+          return res.status(403).json({
+            error: 'Employee is not assigned to this table',
+          });
+        }
+      }
+
       const rows = await OrdersQ.listActiveForTableScoped(pool, tableId, ctx);
       return res.status(200).json({ orders: rows });
     } catch (err) {

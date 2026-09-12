@@ -362,7 +362,14 @@ module.exports = function barRoutes(pool, verifyToken) {
         [actor.restaurantId, status]
       );
 
-      return res.json({ checks: result.rows });
+      const checks =
+        actor.role === 'Employee'
+          ? result.rows.filter(
+              (check) => check.opened_by_user_id === actor.userId
+            )
+          : result.rows;
+
+      return res.json({ checks });
     } catch (error) {
       return sendRequestError(req, res, error, 'bar_checks_list_failed');
     }
@@ -490,7 +497,7 @@ module.exports = function barRoutes(pool, verifyToken) {
       }
 
       const checkResult = await pool.query(
-        `SELECT id
+        `SELECT id, opened_by_user_id
            FROM checks
           WHERE id = $1
             AND restaurant_id = $2
@@ -503,6 +510,16 @@ module.exports = function barRoutes(pool, verifyToken) {
         const error = new Error('Bar check not found.');
         error.status = 404;
         error.statusCode = 404;
+        throw error;
+      }
+
+      if (
+        actor.role === 'Employee' &&
+        checkResult.rows[0].opened_by_user_id !== actor.userId
+      ) {
+        const error = new Error('Employee does not own this bar check.');
+        error.status = 403;
+        error.statusCode = 403;
         throw error;
       }
 
@@ -612,6 +629,16 @@ module.exports = function barRoutes(pool, verifyToken) {
         const error = new Error('Check not found.');
         error.status = 404;
         error.statusCode = 404;
+        throw error;
+      }
+
+      if (
+        actor.role === 'Employee' &&
+        result.rows[0].opened_by_user_id !== actor.userId
+      ) {
+        const error = new Error('Employee does not own this bar check.');
+        error.status = 403;
+        error.statusCode = 403;
         throw error;
       }
 
