@@ -66,6 +66,26 @@ function isUuid(value) {
   return UUID_RE.test(String(value || '').trim());
 }
 
+async function employeeHasActiveBarAssignment({
+  pool,
+  restaurantId,
+  userId,
+}) {
+  const result = await pool.query(
+    `
+      SELECT 1
+      FROM bar_assignments
+      WHERE restaurant_id = $1
+        AND staff_user_id = $2
+        AND active = true
+      LIMIT 1
+    `,
+    [restaurantId, userId]
+  );
+
+  return result.rowCount > 0;
+}
+
 function requireStaff(actor) {
   if (!STAFF_ROLES.has(actor.role)) {
     const error = new Error('Staff access required.');
@@ -121,10 +141,30 @@ function sendRequestError(req, res, error, eventName) {
 module.exports = function barRoutes(pool, verifyToken) {
   const router = express.Router();
 
+  async function requireBarAccess(actor) {
+    if (actor.role !== 'Employee') {
+      return;
+    }
+
+    const hasAssignment = await employeeHasActiveBarAssignment({
+      pool,
+      restaurantId: actor.restaurantId,
+      userId: actor.userId,
+    });
+
+    if (!hasAssignment) {
+      const error = new Error('Employee is not assigned to the bar.');
+      error.status = 403;
+      error.statusCode = 403;
+      throw error;
+    }
+  }
+
   router.get('/chairs', verifyToken, async (req, res) => {
     try {
       const actor = await resolveActor(pool, req);
       requireStaff(actor);
+      await requireBarAccess(actor);
 
       const result = await pool.query(
         `SELECT
@@ -279,6 +319,7 @@ module.exports = function barRoutes(pool, verifyToken) {
     try {
       const actor = await resolveActor(pool, req);
       requireStaff(actor);
+      await requireBarAccess(actor);
 
       const status =
         req.query?.status === undefined
@@ -381,6 +422,7 @@ module.exports = function barRoutes(pool, verifyToken) {
     try {
       const actor = await resolveActor(pool, req);
       requireStaff(actor);
+      await requireBarAccess(actor);
 
       const barChairId =
         req.body?.bar_chair_id === undefined ||
@@ -486,6 +528,7 @@ module.exports = function barRoutes(pool, verifyToken) {
     try {
       const actor = await resolveActor(pool, req);
       requireStaff(actor);
+      await requireBarAccess(actor);
 
       const checkId = String(req.params.checkId || '').trim();
 
@@ -546,6 +589,7 @@ module.exports = function barRoutes(pool, verifyToken) {
     try {
       const actor = await resolveActor(pool, req);
       requireStaff(actor);
+      await requireBarAccess(actor);
 
       const checkId = String(req.params.checkId || '').trim();
       if (!isUuid(checkId)) {
@@ -660,6 +704,7 @@ module.exports = function barRoutes(pool, verifyToken) {
           req
         );
         requireStaff(actor);
+        await requireBarAccess(actor);
 
         const checkId = String(
           req.params.checkId || ''
@@ -1062,6 +1107,7 @@ module.exports = function barRoutes(pool, verifyToken) {
     try {
       const actor = await resolveActor(pool, req);
       requireStaff(actor);
+      await requireBarAccess(actor);
 
       const checkId = String(req.params.checkId || '').trim();
       const paymentMethod = String(
@@ -1123,6 +1169,7 @@ module.exports = function barRoutes(pool, verifyToken) {
     try {
       const actor = await resolveActor(pool, req);
       requireStaff(actor);
+      await requireBarAccess(actor);
 
       const checkId = String(req.params.checkId || '').trim();
 
@@ -1269,6 +1316,7 @@ module.exports = function barRoutes(pool, verifyToken) {
     try {
       const actor = await resolveActor(pool, req);
       requireStaff(actor);
+      await requireBarAccess(actor);
 
       const checkId = String(req.params.checkId || '').trim();
       if (!isUuid(checkId)) {

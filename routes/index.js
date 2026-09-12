@@ -24,6 +24,10 @@ module.exports = (pool, verifyToken, admin, logEvent) => {
     '/table-assignments',
     require('./tableAssignments')(pool, verifyToken)
   );
+  router.use(
+    '/bar-assignments',
+    require('./barAssignments')(pool, verifyToken)
+  );
   router.use('/bar', require('./bar')(pool, verifyToken));
 
   return router;
