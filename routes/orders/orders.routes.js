@@ -2,6 +2,10 @@
 
 const express = require('express');
 const { resolveActor } = require('../../middleware/resolveActor');
+const {
+  employeeHasActiveTableAssignment,
+  employeeCanAccessOrder,
+} = require('../../lib/employeeOrderAccess');
 const config = require('../../config');
 
 const {
@@ -96,26 +100,7 @@ module.exports = function buildOrdersRouter({ pool, verifyToken, handleError }) 
   const OPERATIONAL_SCOPE = new Set(['manager', 'employee']);
   const isOperationalScope = (role) => OPERATIONAL_SCOPE.has(String(role || '').toLowerCase());
 
-  const employeeHasActiveTableAssignment = async ({
-    restaurantId,
-    tableId,
-    userId,
-  }) => {
-    if (!restaurantId || !tableId || !userId) return false;
 
-    const result = await pool.query(
-      `SELECT 1
-       FROM table_assignments
-       WHERE restaurant_id = $1
-         AND table_id = $2
-         AND staff_user_id = $3
-         AND active = true
-       LIMIT 1`,
-      [restaurantId, tableId, userId]
-    );
-
-    return result.rowCount > 0;
-  };
 
   const normalizeRoleForDb = (rawRole) => {
     const r = String(rawRole || '').trim().toLowerCase();
@@ -171,9 +156,19 @@ module.exports = function buildOrdersRouter({ pool, verifyToken, handleError }) 
   };
 
   // Phase 7.1 — Enforce per-order visibility for non-manager scope.
-  const assertOrderVisible = (order, ctx) => {
+  const assertOrderVisible = async (order, ctx) => {
     if (!order) return false;
     if (isManagerScope(ctx.role)) return true;
+
+    if (String(ctx.role || '').toLowerCase() === 'employee') {
+      return employeeCanAccessOrder({
+        pool,
+        restaurantId: ctx.restaurantId,
+        userId: ctx.userId,
+        order,
+      });
+    }
+
     return order.created_by_user_id === ctx.userId;
   };
 
@@ -1457,28 +1452,10 @@ module.exports = function buildOrdersRouter({ pool, verifyToken, handleError }) 
             return res.status(404).json({ error: 'Order not found or unauthorized' });
           }
         } else if (ctx.role === 'Employee') {
-          const kitchenVisible =
-            order.status === 'SENT' ||
-            order.status === 'READY';
+          const visibleToEmployee =
+            await assertOrderVisible(order, ctx);
 
-          const createdByEmployee =
-            order.created_by_user_id === ctx.userId;
-
-          const hasAssignment =
-            !kitchenVisible &&
-            order.table_id
-              ? await employeeHasActiveTableAssignment({
-                  restaurantId: ctx.restaurantId,
-                  tableId: order.table_id,
-                  userId: ctx.userId,
-                })
-              : false;
-
-          if (
-            !createdByEmployee &&
-            !hasAssignment &&
-            !kitchenVisible
-          ) {
+          if (!visibleToEmployee) {
             return res.status(404).json({ error: 'Order not found or unauthorized' });
           }
         } else {
@@ -1892,37 +1869,8 @@ module.exports = function buildOrdersRouter({ pool, verifyToken, handleError }) 
         const row = cur.rows[0];
         const fromStatus = String(row.status || '').toUpperCase();
 
-        let visibleToActor = false;
-
-        if (ctx.role === 'Employee') {
-          const isKitchenReadyTransition =
-            fromStatus === 'SENT' && requestedStatus === 'READY';
-
-          if (isKitchenReadyTransition) {
-            visibleToActor = true;
-          } else if (row.check_id != null && row.table_id == null) {
-            const barCheck = await pool.query(
-              `SELECT id
-               FROM checks
-               WHERE id = $1
-                 AND restaurant_id = $2
-                 AND check_type = 'BAR'
-                 AND status = 'OPEN'
-               LIMIT 1`,
-              [row.check_id, ctx.restaurantId]
-            );
-
-            visibleToActor = barCheck.rowCount === 1;
-          } else {
-            visibleToActor = await employeeHasActiveTableAssignment({
-              restaurantId: ctx.restaurantId,
-              tableId: row.table_id,
-              userId: ctx.userId,
-            });
-          }
-        } else if (ctx.role === 'Customer') {
-          visibleToActor = row.created_by_user_id === ctx.userId;
-        }
+        const visibleToActor =
+          await assertOrderVisible(row, ctx);
 
         req.logEvent?.('debug', {
           at: 'orders.routes',

@@ -14,6 +14,9 @@ const {
 const {
   reconcileSucceededPayment,
 } = require('./payments/payments.webhook');
+const {
+  employeeHasActiveBarAssignment,
+} = require('../lib/employeeOrderAccess');
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -66,25 +69,7 @@ function isUuid(value) {
   return UUID_RE.test(String(value || '').trim());
 }
 
-async function employeeHasActiveBarAssignment({
-  pool,
-  restaurantId,
-  userId,
-}) {
-  const result = await pool.query(
-    `
-      SELECT 1
-      FROM bar_assignments
-      WHERE restaurant_id = $1
-        AND staff_user_id = $2
-        AND active = true
-      LIMIT 1
-    `,
-    [restaurantId, userId]
-  );
 
-  return result.rowCount > 0;
-}
 
 function requireStaff(actor) {
   if (!STAFF_ROLES.has(actor.role)) {

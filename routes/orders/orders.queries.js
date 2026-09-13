@@ -100,7 +100,49 @@ async function listActiveScoped(pool, ctx) {
   if (!role) throw new Error('listActiveScoped: role is required');
 
   const managerScope = isManagerScope(role);
-  const params = [restaurantId, managerScope];
+  const params = managerScope
+    ? [restaurantId]
+    : [restaurantId, userId];
+
+  const employeePredicate = managerScope ? '' : ` AND (
+        (
+          o.check_id IS NOT NULL
+          AND EXISTS (
+            SELECT 1
+            FROM bar_assignments ba
+            WHERE ba.restaurant_id = o.restaurant_id
+              AND ba.staff_user_id = $2
+              AND ba.active = true
+          )
+          AND EXISTS (
+            SELECT 1
+            FROM checks c
+            WHERE c.id = o.check_id
+              AND c.restaurant_id = o.restaurant_id
+              AND c.opened_by_user_id = $2
+          )
+        )
+        OR (
+          o.check_id IS NULL
+          AND o.table_id IS NOT NULL
+          AND (
+            o.created_by_user_id = $2
+            OR EXISTS (
+              SELECT 1
+              FROM table_assignments ta
+              WHERE ta.restaurant_id = o.restaurant_id
+                AND ta.table_id = o.table_id
+                AND ta.staff_user_id = $2
+                AND ta.active = true
+            )
+          )
+        )
+        OR (
+          o.check_id IS NULL
+          AND o.table_id IS NULL
+          AND o.created_by_user_id = $2
+        )
+      )`;
 
   const result = await pool.query(
     `SELECT o.*,
@@ -115,7 +157,7 @@ async function listActiveScoped(pool, ctx) {
        LEFT JOIN order_items oi ON o.id = oi.order_id
       WHERE o.restaurant_id = $1
         AND o.status IN ('OPEN', 'SENT', 'READY')
-        AND ($2::boolean = true OR o.table_id IS NOT NULL)
+        ${employeePredicate}
       GROUP BY o.id
       ORDER BY o.opened_at ASC, o.id ASC`,
     params
@@ -184,7 +226,45 @@ async function listHistoryScoped(pool, ctx) {
   const managerScope = isManagerScope(role);
 
   const params = managerScope ? [restaurantId] : [restaurantId, userId];
-  const userPredicate = managerScope ? '' : ' AND o.created_by_user_id IS NOT NULL AND o.created_by_user_id = $2';
+  const userPredicate = managerScope ? '' : ` AND (
+        (
+          o.check_id IS NOT NULL
+          AND EXISTS (
+            SELECT 1
+            FROM bar_assignments ba
+            WHERE ba.restaurant_id = o.restaurant_id
+              AND ba.staff_user_id = $2
+              AND ba.active = true
+          )
+          AND EXISTS (
+            SELECT 1
+            FROM checks c
+            WHERE c.id = o.check_id
+              AND c.restaurant_id = o.restaurant_id
+              AND c.opened_by_user_id = $2
+          )
+        )
+        OR (
+          o.check_id IS NULL
+          AND o.table_id IS NOT NULL
+          AND (
+            o.created_by_user_id = $2
+            OR EXISTS (
+              SELECT 1
+              FROM table_assignments ta
+              WHERE ta.restaurant_id = o.restaurant_id
+                AND ta.table_id = o.table_id
+                AND ta.staff_user_id = $2
+                AND ta.active = true
+            )
+          )
+        )
+        OR (
+          o.check_id IS NULL
+          AND o.table_id IS NULL
+          AND o.created_by_user_id = $2
+        )
+      )`;
 
   const result = await pool.query(
     `SELECT o.*,
@@ -256,7 +336,45 @@ async function listByStatusScoped(pool, status, ctx) {
   // $2 status
   // $3 userId (employee scope only)
   const params = managerScope ? [restaurantId, status] : [restaurantId, status, userId];
-  const userPredicate = managerScope ? '' : ' AND o.created_by_user_id IS NOT NULL AND o.created_by_user_id = $3';
+  const userPredicate = managerScope ? '' : ` AND (
+        (
+          o.check_id IS NOT NULL
+          AND EXISTS (
+            SELECT 1
+            FROM bar_assignments ba
+            WHERE ba.restaurant_id = o.restaurant_id
+              AND ba.staff_user_id = $3
+              AND ba.active = true
+          )
+          AND EXISTS (
+            SELECT 1
+            FROM checks c
+            WHERE c.id = o.check_id
+              AND c.restaurant_id = o.restaurant_id
+              AND c.opened_by_user_id = $3
+          )
+        )
+        OR (
+          o.check_id IS NULL
+          AND o.table_id IS NOT NULL
+          AND (
+            o.created_by_user_id = $3
+            OR EXISTS (
+              SELECT 1
+              FROM table_assignments ta
+              WHERE ta.restaurant_id = o.restaurant_id
+                AND ta.table_id = o.table_id
+                AND ta.staff_user_id = $3
+                AND ta.active = true
+            )
+          )
+        )
+        OR (
+          o.check_id IS NULL
+          AND o.table_id IS NULL
+          AND o.created_by_user_id = $3
+        )
+      )`;
 
   const result = await pool.query(
     `SELECT o.*,
