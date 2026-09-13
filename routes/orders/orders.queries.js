@@ -95,9 +95,11 @@ async function listHistory(pool) {
 async function listActiveScoped(pool, ctx) {
   const restaurantId = ctx?.restaurantId;
   const role = ctx?.role;
+  const userId = ctx?.userId;
 
   if (!restaurantId) throw new Error('listActiveScoped: restaurantId is required');
   if (!role) throw new Error('listActiveScoped: role is required');
+  if (!isManagerScope(role) && !userId) throw new Error('listActiveScoped: userId is required for employee scope');
 
   const managerScope = isManagerScope(role);
   const params = managerScope
