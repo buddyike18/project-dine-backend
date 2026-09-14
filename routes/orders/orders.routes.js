@@ -1007,8 +1007,10 @@ module.exports = function buildOrdersRouter({ pool, verifyToken, handleError }) 
   // Manager scope: all active restaurant orders.
   // Employee awareness scope: all table-linked active dining-room orders for the restaurant.
   router.get('/active', verifyToken, async (req, res) => {
+    let ctx = null;
+
     try {
-      const ctx = await resolveActorContext(req);
+      ctx = await resolveActorContext(req);
       const rows = await OrdersQ.listActiveScoped(pool, ctx);
 
       // Phase 17 — DEBUG: log aggregate active orders payload
@@ -1016,6 +1018,15 @@ module.exports = function buildOrdersRouter({ pool, verifyToken, handleError }) 
 
       return res.status(200).json({ active_orders: rows });
     } catch (err) {
+      req.logEvent?.('error', {
+        at: 'orders.routes',
+        event: 'orders.active_failed',
+        requestId: req.requestId || null,
+        role: ctx?.role || null,
+        errorCode: err?.code || null,
+        errorName: err?.name || null,
+      });
+
       handleErrorWithStatus(res, err);
     }
   });
