@@ -1018,14 +1018,16 @@ module.exports = function buildOrdersRouter({ pool, verifyToken, handleError }) 
 
       return res.status(200).json({ active_orders: rows });
     } catch (err) {
-      req.logEvent?.('error', {
-        at: 'orders.routes',
-        event: 'orders.active_failed',
-        requestId: req.requestId || null,
-        role: ctx?.role || null,
-        errorCode: err?.code || null,
-        errorName: err?.name || null,
-      });
+      req.logEvent?.(
+        'error',
+        'orders.active_failed',
+        {
+          at: 'orders.routes',
+          role: ctx?.role || null,
+          errorCode: err?.code || null,
+          errorName: err?.name || null,
+        }
+      );
 
       handleErrorWithStatus(res, err);
     }
