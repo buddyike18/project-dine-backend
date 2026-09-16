@@ -163,7 +163,7 @@ module.exports = function barRoutes(pool, verifyToken) {
              SELECT 1
              FROM checks c
              WHERE c.restaurant_id = bc.restaurant_id
-               AND c.chair_id = bc.id
+               AND c.bar_chair_id = bc.id
                AND c.status = 'OPEN'
                AND c.check_type = 'BAR'
            ) AS occupied
