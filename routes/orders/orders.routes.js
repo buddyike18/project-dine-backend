@@ -595,6 +595,7 @@ module.exports = function buildOrdersRouter({ pool, verifyToken, handleError }) 
         orderType !== 'QUICK'
       ) {
         const hasAssignment = await employeeHasActiveTableAssignment({
+          pool,
           restaurantId: restaurantIdFinal,
           tableId,
           userId: ctx.userId,
@@ -1047,6 +1048,7 @@ module.exports = function buildOrdersRouter({ pool, verifyToken, handleError }) 
 
       if (ctx.role === 'Employee') {
         const hasAssignment = await employeeHasActiveTableAssignment({
+          pool,
           restaurantId: ctx.restaurantId,
           tableId,
           userId: ctx.userId,
@@ -1408,6 +1410,7 @@ module.exports = function buildOrdersRouter({ pool, verifyToken, handleError }) 
 
         if (ctx.role === 'Employee') {
           const hasAssignment = await employeeHasActiveTableAssignment({
+            pool,
             restaurantId: ctx.restaurantId,
             tableId: row.table_id,
             userId: ctx.userId,
