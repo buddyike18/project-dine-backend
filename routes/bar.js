@@ -153,15 +153,23 @@ module.exports = function barRoutes(pool, verifyToken) {
 
       const result = await pool.query(
         `SELECT
-           id,
-           chair_number,
-           display_name,
-           active,
-           created_at,
-           updated_at
-         FROM bar_chairs
-         WHERE restaurant_id = $1
-         ORDER BY chair_number ASC`,
+           bc.id,
+           bc.chair_number,
+           bc.display_name,
+           bc.active,
+           bc.created_at,
+           bc.updated_at,
+           EXISTS (
+             SELECT 1
+             FROM checks c
+             WHERE c.restaurant_id = bc.restaurant_id
+               AND c.chair_id = bc.id
+               AND c.status = 'OPEN'
+               AND c.check_type = 'BAR'
+           ) AS occupied
+         FROM bar_chairs bc
+         WHERE bc.restaurant_id = $1
+         ORDER BY bc.chair_number ASC`,
         [actor.restaurantId]
       );
 
