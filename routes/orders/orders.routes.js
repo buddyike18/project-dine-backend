@@ -1480,11 +1480,35 @@ module.exports = function buildOrdersRouter({ pool, verifyToken, handleError }) 
       }
 
       const items = await pool.query(
-        `SELECT *
-         FROM order_items
-         WHERE order_id = $1
-           AND restaurant_id = $2
-         ORDER BY created_at ASC NULLS LAST, id ASC`,
+        `SELECT
+           oi.menu_item_id,
+           oi.name_snapshot AS name,
+           oi.quantity,
+           oi.unit_price_cents_snapshot AS unit_price_cents,
+           oi.line_total_cents,
+           COALESCE(
+             (
+               SELECT json_agg(
+                 json_build_object(
+                   'group_id', oim.group_id,
+                   'option_id', oim.option_id,
+                   'group_name', oim.group_name_snapshot,
+                   'option_name', oim.option_name_snapshot,
+                   'price_delta_cents', oim.price_delta_cents_snapshot,
+                   'quantity', oim.quantity
+                 )
+                 ORDER BY oim.created_at ASC NULLS LAST, oim.id ASC
+               )
+               FROM order_item_modifiers oim
+               WHERE oim.order_item_id = oi.id
+                 AND oim.restaurant_id = $2
+             ),
+             '[]'::json
+           ) AS modifiers
+         FROM order_items oi
+         WHERE oi.order_id = $1
+           AND oi.restaurant_id = $2
+         ORDER BY oi.created_at ASC NULLS LAST, oi.id ASC`,
         [orderId, ctx.restaurantId]
       );
 
